@@ -2,7 +2,7 @@ name: Import US Stock Symbols
 
 on:
   schedule:
-    - cron: "0 3 * * *"
+    - cron: "0 3 * * *"   # 03:00 UTC daily
   workflow_dispatch:
 
 jobs:
@@ -17,12 +17,12 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install Dependencies
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install requests supabase beautifulsoup4 lxml
+          pip install requests supabase pandas lxml html5lib
 
-      - name: Run Symbol Importer
+      - name: Run importer
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
@@ -37,7 +37,7 @@ jobs:
         run: |
           python scripts/import_symbols.py
 
-      - name: Notify Slack on workflow-level failure
+      - name: Notify Slack on workflow failure
         if: failure()
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
