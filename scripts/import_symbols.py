@@ -1,11 +1,12 @@
 # scripts/import_symbols.py
 """
-Importer (Wikipedia-based indices + best-effort exchanges).
-- Uses Wikipedia tables for S&P 500/400/600 (S&P1500), Russell 1000/2000/3000, DJIA.
-- Attempts NASDAQ Trader for exchange lists (best-effort); not required for indices.
-- Deduplicates, filters obvious ETFs, upserts into 'symbols'.
-- Logs run into 'import_stats'.
-- Sends Slack summary on success; Slack + SMS on errors (SMS via Mailgun or SMTP if configured).
+Final importer:
+- Wikipedia primary for indices (S&P 500/400/600 -> S&P1500, Russell 1000/2000/3000, DJIA).
+- Russell fallback: try known GitHub mirrors if Wikipedia returns too few rows.
+- Best-effort NASDAQTrader attempt (not required).
+- Dedupe, ETF filter, upsert into Supabase `symbols`.
+- Write run row into `import_stats`.
+- Slack summary on success; Slack + SMS on failure (SMS only if MAILGUN or SMTP configured).
 """
 
 import io
@@ -19,7 +20,7 @@ import pandas as pd
 from supabase import create_client
 
 # ---------------------------
-# Config (from environment)
+# Environment / config
 # ---------------------------
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_ANON_KEY")
@@ -40,7 +41,7 @@ if not SUPABASE_URL or not SUPABASE_KEY:
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # ---------------------------
-# Behavior
+# Tunables
 # ---------------------------
 RETRY_ATTEMPTS = 3
 RETRY_DELAY = 2
@@ -54,7 +55,7 @@ REQUEST_HEADERS = {
 }
 
 # ---------------------------
-# Wikipedia index pages
+# Sources
 # ---------------------------
 WIKI_SP500 = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
 WIKI_SP400 = "https://en.wikipedia.org/wiki/List_of_S%26P_400_companies"
@@ -64,12 +65,26 @@ WIKI_R2000 = "https://en.wikipedia.org/wiki/Russell_2000"
 WIKI_R3000 = "https://en.wikipedia.org/wiki/Russell_3000_Index"
 WIKI_DJIA = "https://en.wikipedia.org/wiki/Dow_Jones_Industrial_Average"
 
-# Best-effort exchange files (try but not required)
+# Russell fallback mirrors (stable public mirrors)
+RUSSELL1000_MIRRORS = [
+    "https://raw.githubusercontent.com/StonksLexicon/stock-lists/main/russell1000.csv",
+    "https://raw.githubusercontent.com/rajchandra/market-data/master/russell1000.csv"
+]
+RUSSELL2000_MIRRORS = [
+    "https://raw.githubusercontent.com/StonksLexicon/stock-lists/main/russell2000.csv",
+    "https://raw.githubusercontent.com/rajchandra/market-data/master/russell2000.csv"
+]
+RUSSELL3000_MIRRORS = [
+    "https://raw.githubusercontent.com/StonksLexicon/stock-lists/main/russell3000.csv",
+    "https://raw.githubusercontent.com/rajchandra/market-data/master/russell3000.csv"
+]
+
+# Best-effort NasdaqTrader (may be blocked/time out)
 NASDAQTXT_HTTP = "http://ftp.nasdaqtrader.com/dynamic/SymbolDirectory/nasdaqlisted.txt"
 OTHERLISTED_HTTP = "http://ftp.nasdaqtrader.com/dynamic/SymbolDirectory/otherlisted.txt"
 
 # ---------------------------
-# Helpers
+# HTTP helper
 # ---------------------------
 def safe_get_text(url: str, retries: int = RETRY_ATTEMPTS, delay: int = RETRY_DELAY) -> Optional[str]:
     last_exc = None
@@ -85,6 +100,9 @@ def safe_get_text(url: str, retries: int = RETRY_ATTEMPTS, delay: int = RETRY_DE
     print(f"All attempts failed for {url}: {last_exc}")
     return None
 
+# ---------------------------
+# Parsers
+# ---------------------------
 def parse_nasdaq_txt(text: str) -> List[str]:
     out = []
     lines = text.splitlines()
@@ -115,7 +133,7 @@ def parse_csv_symbols(text: str, candidate_cols=("Symbol","symbol","Ticker","tic
                     out.append(row[c].strip().upper())
                     break
     except Exception:
-        # fallback: treat each line as a symbol (best-effort)
+        # fallback: per-line
         for line in text.splitlines():
             s = line.strip().split(",")[0].strip().upper()
             if s:
@@ -123,40 +141,59 @@ def parse_csv_symbols(text: str, candidate_cols=("Symbol","symbol","Ticker","tic
     return out
 
 # ---------------------------
-# Wikipedia table fetchers (pandas)
+# Wikipedia fetch / parser using pandas.read_html with StringIO
 # ---------------------------
-def fetch_symbols_from_wikipedia(url: str, symbol_column_names=("Symbol","Ticker","Ticker symbol","Ticker symbol(s)")) -> List[str]:
+def fetch_symbols_from_wikipedia(url: str) -> List[str]:
     html = safe_get_text(url)
     if not html:
         return []
     try:
-        # pandas.read_html can parse multiple tables; we want the first table that includes ticker/symbol column
-        tables = pd.read_html(html)
+        # wrap literal html text in StringIO to avoid pandas FutureWarning
+        tables = pd.read_html(io.StringIO(html))
         for df in tables:
             cols = [str(c).lower() for c in df.columns]
-            # try to locate column that looks like symbol/ticker
-            for candidate in ("symbol","ticker","ticker symbol","ticker(s)"):
+            for candidate in ("symbol","ticker","ticker symbol","ticker(s)","ticker(s)"):
                 if any(candidate in c for c in cols):
-                    # pick the most likely column
+                    # find the column
                     for c in df.columns:
                         if candidate in str(c).lower():
                             try:
                                 vals = df[c].astype(str).tolist()
-                                # clean and upper-case
                                 syms = [v.split()[0].split('[')[0].strip().upper() for v in vals if v and str(v).strip() != ""]
-                                return [s for s in syms if s]
+                                # filter out header-like values
+                                syms = [s for s in syms if s and len(s) <= 12]
+                                if syms:
+                                    return syms
                             except Exception:
                                 continue
-        # fallback: try common first column
+        # fallback: first column
         first = tables[0]
         vals = first.iloc[:,0].astype(str).tolist()
-        return [v.split()[0].split('[')[0].strip().upper() for v in vals if v and str(v).strip() != ""]
+        syms = [v.split()[0].split('[')[0].strip().upper() for v in vals if v and str(v).strip() != ""]
+        return [s for s in syms if s and len(s) <= 12]
     except Exception as e:
-        print(f"pandas.read_html failed for {url}: {e}")
+        print(f"pandas.read_html parsing failed for {url}: {e}")
         return []
 
 # ---------------------------
-# Upsert and logging
+# Russell-specific fetcher: wiki first, then mirrors
+# ---------------------------
+def fetch_russell_with_fallback(wiki_url: str, mirrors: List[str], expected_min: int = 1000) -> List[str]:
+    syms = fetch_symbols_from_wikipedia(wiki_url)
+    if syms and len(syms) >= min(10, expected_min//10):  # if wiki yields reasonable chunk, accept it
+        return syms
+    # else try mirrors
+    for m in mirrors:
+        txt = safe_get_text(m)
+        if txt:
+            parsed = parse_csv_symbols(txt, candidate_cols=("Symbol","symbol","Ticker","ticker"))
+            if parsed:
+                return parsed
+    # final: return whatever wiki had (even small)
+    return syms
+
+# ---------------------------
+# Upsert + logging
 # ---------------------------
 def upsert_symbols_batch(symbols: List[str]):
     batch = []
@@ -183,7 +220,7 @@ def write_import_stats(status: str, fetched: int, filtered: int, error_message: 
         print("Failed to write import_stats:", e)
 
 # ---------------------------
-# Notifications (Slack + SMS)
+# Notifications
 # ---------------------------
 def send_slack(msg: str):
     if not SLACK_WEBHOOK_URL:
@@ -192,7 +229,7 @@ def send_slack(msg: str):
     try:
         requests.post(SLACK_WEBHOOK_URL, json={"text": msg}, timeout=10)
     except Exception as e:
-        print("Slack send failed:", e)
+        print("Slack send error:", e)
 
 def send_sms_mailgun(to_addr: str, body: str) -> bool:
     if not (MAILGUN_API_KEY and MAILGUN_DOMAIN):
@@ -243,10 +280,10 @@ def notify_error_sms(body: str):
     if not sent and SMTP_HOST:
         sent = send_sms_smtp(SMS_GATEWAY_ADDRESS, body)
     if not sent:
-        print("SMS not sent (no provider configured).")
+        print("No SMS provider succeeded; SMS skipped.")
 
 # ---------------------------
-# Top-level orchestration
+# Main orchestration
 # ---------------------------
 def main():
     start = time.time()
@@ -254,84 +291,80 @@ def main():
     failed_sources = []
 
     try:
-        # 1) Indices from Wikipedia (primary source per your choice)
-        print("Fetching S&P 500 components from Wikipedia...")
+        # S&P 500/400/600 (Wikipedia primary)
+        print("Fetching S&P 500...")
         s500 = fetch_symbols_from_wikipedia(WIKI_SP500)
         print(f"S&P500: {len(s500)}")
 
-        print("Fetching S&P 400 components from Wikipedia...")
+        print("Fetching S&P 400...")
         s400 = fetch_symbols_from_wikipedia(WIKI_SP400)
         print(f"S&P400: {len(s400)}")
 
-        print("Fetching S&P 600 components from Wikipedia...")
+        print("Fetching S&P 600...")
         s600 = fetch_symbols_from_wikipedia(WIKI_SP600)
         print(f"S&P600: {len(s600)}")
 
+        sp1500 = list(set(s500 + s400 + s600))
+
+        # Russell (wiki first, then mirrors)
         print("Fetching Russell 1000...")
-        r1000 = fetch_symbols_from_wikipedia(WIKI_R1000)
+        r1000 = fetch_russell_with_fallback(WIKI_R1000, RUSSELL1000_MIRRORS, expected_min=900)
         print(f"Russell1000: {len(r1000)}")
 
         print("Fetching Russell 2000...")
-        r2000 = fetch_symbols_from_wikipedia(WIKI_R2000)
+        r2000 = fetch_russell_with_fallback(WIKI_R2000, RUSSELL2000_MIRRORS, expected_min=1800)
         print(f"Russell2000: {len(r2000)}")
 
         print("Fetching Russell 3000...")
-        r3000 = fetch_symbols_from_wikipedia(WIKI_R3000)
+        r3000 = fetch_russell_with_fallback(WIKI_R3000, RUSSELL3000_MIRRORS, expected_min=2500)
         print(f"Russell3000: {len(r3000)}")
 
+        # DJIA
         print("Fetching DJIA (Dow 30)...")
         djia = fetch_symbols_from_wikipedia(WIKI_DJIA)
         print(f"DJIA: {len(djia)}")
 
-        # Combine S&P 1500 = s500 + s400 + s600
-        sp1500 = list(set(s500 + s400 + s600))
-
-        # 2) Best-effort exchange lists (optional; if these fail we still have indices)
-        print("Attempting to fetch NASDAQ/otherlisted (best-effort)...")
+        # Best-effort exchanges (optional)
+        print("Attempting NASDAQ/otherlisted (best-effort)...")
         ex = []
-        txt = safe_get_text(NASDAQTXT_HTTP)
-        if txt:
-            ex += parse_nasdaq_txt(txt)
-        txt2 = safe_get_text(OTHERLISTED_HTTP)
-        if txt2:
-            ex += parse_nasdaq_txt(txt2)
+        t = safe_get_text(NASDAQTXT_HTTP)
+        if t:
+            ex += parse_nasdaq_txt(t)
+        t2 = safe_get_text(OTHERLISTED_HTTP)
+        if t2:
+            ex += parse_nasdaq_txt(t2)
 
-        # 3) Attempt an OTC mirror (best-effort)
-        # many community mirrors change; we skip hard-coded unreliable ones here
-        # If you want OTC, add a stable mirror URL to the script.
-
-        # 4) Merge everything
+        # Merge everything
         collected += sp1500 + r1000 + r2000 + r3000 + djia + ex
-        # normalize & dedupe
-        normalized = []
+
+        raw_count = len(collected)
+
+        # normalize, dedupe, filter ETFs conservatively
         seen = set()
+        normalized = []
         for s in collected:
             if not s:
                 continue
-            code = s.strip().upper()
-            if len(code) > 12:
+            st = s.strip().upper()
+            if len(st) > 12:
                 continue
-            if code in seen:
+            if st in seen:
                 continue
-            # filter obvious ETF-like tickers (conservative)
-            if any(tok in code for tok in ETF_KEYWORDS):
-                # skip if token appears within symbol string (rare)
+            # conservative ETF filter: skip if symbol contains ETF-like tokens (rare)
+            if any(tok in st for tok in ETF_KEYWORDS):
                 continue
-            normalized.append(code)
-            seen.add(code)
+            seen.add(st)
+            normalized.append(st)
 
-        raw_count = len(collected)
         filtered_count = len(normalized)
-
         print(f"Raw collected: {raw_count}; Final after filter: {filtered_count}")
 
-        # Upsert to Supabase
+        # Upsert into Supabase
         upsert_symbols_batch(normalized)
 
-        duration = time.time() - start
         write_import_stats("success", raw_count, filtered_count, None)
 
-        # Slack summary
+        duration = time.time() - start
         send_slack(f"✅ Import successful — Raw: {raw_count}  Final: {filtered_count}  Duration: {duration:.1f}s  Failed sources: {failed_sources if failed_sources else 'none'}")
 
         print("Import complete.")
@@ -339,7 +372,7 @@ def main():
         err_text = "".join(traceback.format_exception_only(type(exc), exc))
         print("Fatal error during import:", err_text)
         write_import_stats("failure", len(collected), 0, err_text)
-        # Slack + SMS on failure
+        # Slack + SMS (errors only)
         send_slack(f"❌ Import FAILED: {err_text}\nFailed sources: {failed_sources}")
         notify_error_sms(f"Import FAILED: {err_text}\nFailed sources: {failed_sources}")
         raise
