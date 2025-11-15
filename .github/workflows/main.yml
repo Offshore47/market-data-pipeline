@@ -3,7 +3,7 @@ name: Import US Stock Symbols
 on:
   schedule:
     - cron: "0 3 * * *"   # runs every day at 03:00 UTC
-  workflow_dispatch:       # allows manual runs from Actions UI
+  workflow_dispatch:
 
 jobs:
   import-symbols:
@@ -13,9 +13,9 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v3
 
-        - name: Normalize directory
+      - name: Normalize directory
         run: |
-        mv Sentiment sentiment || true
+          mv Sentiment sentiment || true
 
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -32,4 +32,4 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
         run: |
-          python scripts/import_symbols.py
+          python sentiment/scripts/import_symbols.py
