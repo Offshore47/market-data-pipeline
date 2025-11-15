@@ -23,9 +23,9 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests supabase
 
-      - name: Run import script
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
-        run: |
-          python scripts/import_symbols.py
+      - name: Run Symbol Importer
+  env:
+    SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+    SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+  run: |
+    python import_symbols.py
