@@ -23,14 +23,13 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests supabase supabase-py
 
-      - name: Debug: Show repo tree
+      - name: Debug Repo Tree
         run: |
-          echo "Listing repo files:"
           ls -R .
 
       - name: Run Symbol Importer
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          SUPABASE_ANON_KEY: ${{ secrets/SUPABASE_ANON_KEY }}
         run: |
           python scripts/import_symbols.py
