@@ -1,71 +1,75 @@
 # scripts/import_symbols.py
 """
-Hybrid symbol importer (GitHub primary, Wikipedia fallback) that:
-- Pulls NASDAQ/NYSE/AMEX from NasdaqTrader (with fallbacks)
+Hybrid symbol importer + logging + free ntfy error alerts.
+
+What it does:
+- Pulls NASDAQ/NYSE/AMEX (NasdaqTrader primary, with fallbacks)
 - Pulls OTC from community CSV mirrors
-- Pulls S&P 500 / 400 / 600, Dow 30, and Russell indexes from GitHub (R1)
-- Falls back to Wikipedia for S&P / Dow if GitHub sources fail
-- Deduplicates, filters ETFs/funds, and upserts into Supabase in batches
+- Pulls Russell 1000/2000/3000 from datasets/russell-index (primary)
+- Pulls S&P500/400/600 + Dow (GitHub primary, Wikipedia fallback)
+- Deduplicates, filters ETF-like names, and batch-upserts to Supabase
+- Writes a run log row to `import_logs` in Supabase
+- On ERROR: sends a free ntfy push notification (no API key required)
+Notes:
+- Requires Python packages: requests, supabase, beautifulsoup4, lxml
 """
 
 import csv
 import time
+import traceback
 import requests
 import os
-from typing import List, Set, Optional
+from typing import List, Optional
 from supabase import create_client
 
-# Optional import for HTML parsing
+# Optional: BeautifulSoup for Wikipedia fallback parsing
 try:
     from bs4 import BeautifulSoup
 except Exception:
-    BeautifulSoup = None  # we'll check at runtime and print helpful message
+    BeautifulSoup = None
 
-# -------------------------
-# Configuration / Sources
-# -------------------------
+# --------------------------
+# Config / Env
+# --------------------------
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_ANON_KEY")
+NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "market-data-pipeline")  # optional override
+
 if not SUPABASE_URL or not SUPABASE_KEY:
-    raise SystemExit("Missing SUPABASE_URL or SUPABASE_ANON_KEY in environment")
+    raise SystemExit("Missing SUPABASE_URL or SUPABASE_ANON_KEY environment variables.")
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# Official/primary sources
+# Sources
 NASDAQTRADER_NASDAQ = "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt"
 NASDAQTRADER_OTHER  = "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
 
-# OTC sources (community mirrors)
 OTC_SOURCE_1 = "https://raw.githubusercontent.com/rreichel3/US-Stock-Symbols/main/otc/OTCbb.csv"
 OTC_SOURCE_2 = "https://raw.githubusercontent.com/rreichel3/US-Stock-Symbols/main/otc/OTCmk.csv"
 
-# Russell (R1) datasets (primary)
 RUSSELL_1000 = "https://raw.githubusercontent.com/datasets/russell-index/master/data/russell-1000.csv"
 RUSSELL_2000 = "https://raw.githubusercontent.com/datasets/russell-index/master/data/russell-2000.csv"
 RUSSELL_3000 = "https://raw.githubusercontent.com/datasets/russell-index/master/data/russell-3000.csv"
 
-# S&P and Dow: prefer GitHub mirrors, fallback to Wikipedia
 SP500_GH = "https://raw.githubusercontent.com/datasets/s-and-p-500/master/data/constituents.csv"
-SP400_GH = "https://raw.githubusercontent.com/angeloashmore/sandp400/master/data/sandp400.csv"  # community fallback
-SP600_GH = "https://raw.githubusercontent.com/holtzy/data_to_viz/master/Example_dataset/1000_SNP600.csv"  # community fallback (if structure differs we fallback to wiki)
+SP400_GH = "https://raw.githubusercontent.com/angeloashmore/sandp400/master/data/sandp400.csv"
+SP600_GH = "https://raw.githubusercontent.com/holtzy/data_to_viz/master/Example_dataset/1000_SNP600.csv"
 DOW_GH   = "https://raw.githubusercontent.com/datasets/dow-jones/master/data/dow-jones-index-components.csv"
 
-# Wikipedia pages (fallback)
 WIKI_SP500 = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
 WIKI_SP400 = "https://en.wikipedia.org/wiki/List_of_S%26P_400_companies"
 WIKI_SP600 = "https://en.wikipedia.org/wiki/List_of_S%26P_600_companies"
 WIKI_DOW   = "https://en.wikipedia.org/wiki/Dow_Jones_Industrial_Average"
 
-# Generic settings
+# Behavior
 RETRY_ATTEMPTS = 3
-RETRY_DELAY = 3  # seconds
+RETRY_DELAY = 2
 BATCH_SIZE = 500
-
 ETF_KEYWORDS = ["ETF", "ETN", "FUND", "TRUST", "INDEX", "EXCHANGE TRADED"]
 
-# -------------------------
-# Utilities
-# -------------------------
+# --------------------------
+# Helpers
+# --------------------------
 def safe_get_text(url: str, retries: int = RETRY_ATTEMPTS, delay: int = RETRY_DELAY) -> Optional[str]:
     last_err = None
     for attempt in range(1, retries + 1):
@@ -75,80 +79,69 @@ def safe_get_text(url: str, retries: int = RETRY_ATTEMPTS, delay: int = RETRY_DE
             return r.text
         except Exception as e:
             last_err = e
-            print(f"[{attempt}/{retries}] Failed to GET {url}: {e}")
+            print(f"[{attempt}/{retries}] GET {url} failed: {e}")
             time.sleep(delay)
     print(f"All attempts failed for {url}: {last_err}")
     return None
 
-def parse_pipe_txt_symbols(text: str, symbol_col_candidates=("Symbol","ACT Symbol","NASDAQ Symbol","CQS Symbol")) -> List[str]:
+def parse_pipe_txt_symbols(text: str, symbol_candidates=("Symbol","ACT Symbol","NASDAQ Symbol","CQS Symbol")) -> List[str]:
     lines = text.splitlines()
     if not lines:
         return []
     header = lines[0].split("|")
     symbol_index = None
-    for candidate in symbol_col_candidates:
-        if candidate in header:
-            symbol_index = header.index(candidate)
+    for cand in symbol_candidates:
+        if cand in header:
+            symbol_index = header.index(cand)
             break
     if symbol_index is None:
-        # last resort: assume first column
         symbol_index = 0
-
-    syms = []
-    for line in lines[1:-1]:  # skip header and footer
+    out = []
+    for line in lines[1:-1]:  # skip header/footer lines
         parts = line.split("|")
         if len(parts) > symbol_index:
             s = parts[symbol_index].strip().upper()
             if s and s != "SYMBOL":
-                syms.append(s)
-    return syms
+                out.append(s)
+    return out
 
-def parse_csv_symbols(text: str, possible_cols=("Symbol","symbol","Ticker","Code","Ticker symbol","ticker")) -> List[str]:
-    syms = []
+def parse_csv_symbols(text: str, possible_cols=("Symbol","symbol","Ticker","Code","ticker")) -> List[str]:
+    out = []
     try:
         reader = csv.DictReader(text.splitlines())
         for row in reader:
             for col in possible_cols:
                 if col in row and row[col]:
-                    sym = row[col].strip().upper()
-                    if sym:
-                        syms.append(sym)
+                    out.append(row[col].strip().upper())
                     break
     except Exception as e:
         print(f"CSV parse error: {e}")
-    return syms
+    return out
 
 def parse_wikipedia_table_symbols(html_text: str) -> List[str]:
     if BeautifulSoup is None:
-        print("BeautifulSoup not installed — cannot parse Wikipedia fallback. Add beautifulsoup4 to requirements.")
+        print("BeautifulSoup not installed; Wikipedia fallback skipped.")
         return []
-
     soup = BeautifulSoup(html_text, "lxml")
-    # find first table that contains a header cell with "Symbol" (case-insensitive)
     tables = soup.find_all("table")
     for table in tables:
         headers = [th.get_text(strip=True).lower() for th in table.find_all("th")]
-        if any("symbol" in h for h in headers) or any("ticker" in h for h in headers):
-            # find which header index contains 'symbol' or 'ticker'
+        if any("symbol" in h or "ticker" in h for h in headers):
             idx = None
-            for i, h in enumerate(headers):
+            for i,h in enumerate(headers):
                 if "symbol" in h or "ticker" in h:
                     idx = i
                     break
             if idx is None:
                 continue
-            # collect values from that column
-            rows = table.find_all("tr")
             syms = []
-            for row in rows[1:]:
-                cols = row.find_all(["td","th"])
+            rows = table.find_all("tr")
+            for r in rows[1:]:
+                cols = r.find_all(["td","th"])
                 if len(cols) > idx:
                     text = cols[idx].get_text(strip=True)
-                    if text:
-                        # Wikipedia often includes links or footnotes like "AAPL" or "AAPL[1]"
-                        # take first token before any whitespace or bracket
-                        token = text.split()[0]
-                        token = token.split('[')[0]
+                    token = text.split()[0].split('[')[0]
+                    if token:
                         syms.append(token.upper())
             return syms
     return []
@@ -157,118 +150,89 @@ def is_etf_symbol(sym: str) -> bool:
     if not sym:
         return False
     upper = sym.upper()
-    # quick pattern-based checks (some ETFs end with X or have ETF in name; this is conservative)
     if any(k in upper for k in ETF_KEYWORDS):
         return True
-    # typical ETF tickers often end with 'X' but many equities do too; keep conservative
     return False
 
-# -------------------------
-# Fetch functions for each universe
-# -------------------------
+# --------------------------
+# Source fetchers
+# --------------------------
 def fetch_nasdaq_nyse_amex() -> List[str]:
-    syms = []
-    # try NASDAQ Trader NASDAQ list
-    text = safe_get_text(NASDAQTRADER_NASDAQ)
-    if text:
-        syms += parse_pipe_txt_symbols(text)
-
-    # try otherlisted (contains NYSE/AMEX)
-    text2 = safe_get_text(NASDAQTRADER_OTHER)
-    if text2:
-        syms += parse_pipe_txt_symbols(text2)
-
-    return syms
+    out = []
+    t = safe_get_text(NASDAQTRADER_NASDAQ)
+    if t:
+        out += parse_pipe_txt_symbols(t)
+    t2 = safe_get_text(NASDAQTRADER_OTHER)
+    if t2:
+        out += parse_pipe_txt_symbols(t2)
+    return out
 
 def fetch_otc_all() -> List[str]:
-    syms = []
+    out = []
     t1 = safe_get_text(OTC_SOURCE_1)
     if t1:
-        syms += parse_csv_symbols(t1, possible_cols=("Symbol","symbol","Ticker","Code"))
-
+        out += parse_csv_symbols(t1, possible_cols=("Symbol","symbol","Ticker","Code"))
     t2 = safe_get_text(OTC_SOURCE_2)
     if t2:
-        syms += parse_csv_symbols(t2, possible_cols=("Symbol","symbol","Ticker","Code"))
-
-    return syms
+        out += parse_csv_symbols(t2, possible_cols=("Symbol","symbol","Ticker","Code"))
+    return out
 
 def fetch_russell_all() -> List[str]:
-    syms = []
+    out = []
     for url in (RUSSELL_1000, RUSSELL_2000, RUSSELL_3000):
         t = safe_get_text(url)
         if t:
-            syms += parse_csv_symbols(t, possible_cols=("symbol","Symbol","Ticker"))
-    return syms
+            out += parse_csv_symbols(t, possible_cols=("symbol","Symbol","Ticker"))
+    return out
 
 def fetch_sp_and_dow_with_fallback() -> List[str]:
-    syms = []
-    # Primary: GitHub lists
+    out = []
     t = safe_get_text(SP500_GH)
     if t:
-        syms += parse_csv_symbols(t, possible_cols=("Symbol","symbol","ticker"))
+        out += parse_csv_symbols(t, possible_cols=("Symbol","symbol","ticker"))
     else:
-        # fallback to wiki
-        print("SP500 GitHub source failed; trying Wikipedia fallback")
+        print("SP500 GitHub failed — trying Wikipedia")
         wiki = safe_get_text(WIKI_SP500)
         if wiki:
-            syms += parse_wikipedia_table_symbols(wiki)
+            out += parse_wikipedia_table_symbols(wiki)
 
-    # S&P 400
     t = safe_get_text(SP400_GH)
     if t:
-        syms += parse_csv_symbols(t, possible_cols=("Symbol","symbol","ticker"))
+        out += parse_csv_symbols(t, possible_cols=("Symbol","symbol","ticker"))
     else:
-        print("SP400 GitHub source failed; trying Wikipedia fallback")
+        print("SP400 GitHub failed — trying Wikipedia")
         wiki = safe_get_text(WIKI_SP400)
         if wiki:
-            syms += parse_wikipedia_table_symbols(wiki)
+            out += parse_wikipedia_table_symbols(wiki)
 
-    # S&P 600
     t = safe_get_text(SP600_GH)
     if t:
-        syms += parse_csv_symbols(t, possible_cols=("Symbol","symbol","ticker"))
+        out += parse_csv_symbols(t, possible_cols=("Symbol","symbol","ticker"))
     else:
-        print("SP600 GitHub source failed; trying Wikipedia fallback")
+        print("SP600 GitHub failed — trying Wikipedia")
         wiki = safe_get_text(WIKI_SP600)
         if wiki:
-            syms += parse_wikipedia_table_symbols(wiki)
+            out += parse_wikipedia_table_symbols(wiki)
 
-    # Dow 30
     t = safe_get_text(DOW_GH)
     if t:
-        syms += parse_csv_symbols(t, possible_cols=("Symbol","symbol","ticker","Ticker"))
+        out += parse_csv_symbols(t, possible_cols=("Symbol","symbol","ticker","Ticker"))
     else:
-        print("Dow GitHub source failed; trying Wikipedia fallback")
+        print("Dow GitHub failed — trying Wikipedia")
         wiki = safe_get_text(WIKI_DOW)
         if wiki:
-            syms += parse_wikipedia_table_symbols(wiki)
+            out += parse_wikipedia_table_symbols(wiki)
 
-    return syms
+    return out
 
-# -------------------------
-# Upsert helper
-# -------------------------
-def upsert_symbols(symbols: List[str]):
-    # dedupe & filter
-    clean = []
-    seen = set()
-    for s in symbols:
-        if not s:
-            continue
-        s = s.strip().upper()
-        if len(s) > 12:
-            continue
-        if s in seen:
-            continue
-        if is_etf_symbol(s):
-            continue
-        seen.add(s)
-        clean.append(s)
-
-    print(f"Upserting {len(clean)} symbols (after de-dup + ETF filter)...")
-
+# --------------------------
+# Upsert & logging
+# --------------------------
+def upsert_batch(symbols: List[str]):
     batch = []
-    for sym in clean:
+    for sym in symbols:
+        if not sym or len(sym) > 12:
+            continue
         batch.append({"symbol": sym, "is_valid": None, "source": "hybrid-import", "last_checked": None})
         if len(batch) >= BATCH_SIZE:
             supabase.table("symbols").upsert(batch).execute()
@@ -276,50 +240,111 @@ def upsert_symbols(symbols: List[str]):
     if batch:
         supabase.table("symbols").upsert(batch).execute()
 
-    print("Upsert complete.")
+def write_import_log(status: str, raw_count: int, filtered_count: int, failed_sources: List[str], err_text: Optional[str]):
+    try:
+        payload = {
+            "status": status,
+            "source_count": raw_count,
+            "filtered_count": filtered_count,
+            "error_message": err_text or None
+        }
+        supabase.table("import_logs").insert(payload).execute()
+    except Exception as e:
+        print(f"Failed to write import log to Supabase: {e}")
 
-# -------------------------
-# Main entry
-# -------------------------
+def send_ntfy_alert(title: str, body: str):
+    try:
+        url = f"https://ntfy.sh/{NTFY_TOPIC}"
+        headers = {"Title": title}
+        requests.post(url, data=body.encode("utf-8"), headers=headers, timeout=10)
+    except Exception as e:
+        print(f"Failed to send ntfy alert: {e}")
+
+# --------------------------
+# Main
+# --------------------------
 def main():
-    print("Starting hybrid symbol import...")
-
+    start = time.time()
     collected = []
+    failed_sources = []
 
-    # 1) Core exchange lists
-    print("Fetching NASDAQ/NYSE/AMEX lists...")
     try:
-        collected += fetch_nasdaq_nyse_amex()
-    except Exception as e:
-        print(f"Error fetching core exchanges: {e}")
+        print("Fetching NASDAQ/NYSE/AMEX...")
+        try:
+            collected += fetch_nasdaq_nyse_amex()
+        except Exception as e:
+            failed_sources.append("nasdaqtrader")
+            print(f"Error fetching nasdaq/other: {e}")
 
-    # 2) OTC markets
-    print("Fetching OTC lists...")
-    try:
-        collected += fetch_otc_all()
-    except Exception as e:
-        print(f"Error fetching OTC: {e}")
+        print("Fetching OTC...")
+        try:
+            otc = fetch_otc_all()
+            if not otc:
+                failed_sources.append("otc")
+            collected += otc
+        except Exception as e:
+            failed_sources.append("otc")
+            print(f"Error fetching OTC: {e}")
 
-    # 3) Russell indexes (R1)
-    print("Fetching Russell indexes (1000/2000/3000)...")
-    try:
-        collected += fetch_russell_all()
-    except Exception as e:
-        print(f"Error fetching Russell indexes: {e}")
+        print("Fetching Russell indexes...")
+        try:
+            r = fetch_russell_all()
+            if not r:
+                failed_sources.append("russell")
+            collected += r
+        except Exception as e:
+            failed_sources.append("russell")
+            print(f"Error fetching Russell: {e}")
 
-    # 4) S&P and Dow (GitHub primary, Wikipedia fallback)
-    print("Fetching S&P / Dow (with fallback)...")
-    try:
-        collected += fetch_sp_and_dow_with_fallback()
-    except Exception as e:
-        print(f"Error fetching S&P/Dow: {e}")
+        print("Fetching S&P / Dow (with fallback)...")
+        try:
+            sp = fetch_sp_and_dow_with_fallback()
+            if not sp:
+                failed_sources.append("sp/dow")
+            collected += sp
+        except Exception as e:
+            failed_sources.append("sp/dow")
+            print(f"Error fetching sp/dow: {e}")
 
-    print(f"Total raw symbols collected (pre-dedupe): {len(collected)}")
+        raw_count = len(collected)
+        print(f"Total raw symbols collected: {raw_count}")
 
-    # Upsert into Supabase
-    upsert_symbols(collected)
+        # dedupe & filter
+        clean = []
+        seen = set()
+        for s in collected:
+            if not s:
+                continue
+            st = s.strip().upper()
+            if len(st) > 12:
+                continue
+            if st in seen:
+                continue
+            if is_etf_symbol(st):
+                continue
+            seen.add(st)
+            clean.append(st)
 
-    print("Hybrid import finished.")
+        filtered_count = len(clean)
+        print(f"Symbols after dedupe & ETF filter: {filtered_count}")
+
+        # upsert
+        upsert_batch(clean)
+
+        duration = time.time() - start
+        write_import_log("success", raw_count, filtered_count, failed_sources, None)
+        print(f"Import finished in {duration:.1f}s. Raw: {raw_count} Filtered: {filtered_count}")
+
+    except Exception as exc:
+        duration = time.time() - start
+        err_text = "".join(traceback.format_exception_only(type(exc), exc))
+        print(f"Fatal error during import: {err_text}")
+        write_import_log("error", len(collected), 0, failed_sources, err_text)
+        # send ntfy alert (errors only)
+        title = "[market-data-pipeline] 🚨 Import FAILED"
+        body = f"Error: {err_text}\nFailed sources: {failed_sources}"
+        send_ntfy_alert(title, body)
+        raise
 
 if __name__ == "__main__":
     main()
