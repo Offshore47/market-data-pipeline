@@ -9,6 +9,10 @@ jobs:
   import-symbols:
     runs-on: ubuntu-latest
 
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+
     steps:
       - name: Checkout repo
         uses: actions/checkout@v3
@@ -29,8 +33,5 @@ jobs:
           ls -R .
 
       - name: Run Symbol Importer
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
         run: |
           python scripts/import_symbols.py
