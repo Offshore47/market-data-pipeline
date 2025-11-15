@@ -28,7 +28,6 @@ jobs:
           pwd
           ls -R .
 
-
       - name: Run Symbol Importer
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
