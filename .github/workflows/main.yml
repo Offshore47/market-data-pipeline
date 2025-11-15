@@ -37,7 +37,7 @@ jobs:
         run: |
           python scripts/import_symbols.py
 
-      - name: Notify Slack on workflow failure
+      - name: Notify Slack on workflow-level failure
         if: failure()
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
