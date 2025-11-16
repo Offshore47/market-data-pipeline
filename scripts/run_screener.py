@@ -287,7 +287,7 @@ def initialize_firebase():
         # Use a unique name for the app instance
         initialize_app(cred, name=f"screener_app_{APP_ID}")
         print("Firebase Admin SDK initialized successfully.")
-        return firestore.client()
+        return return firestore.client(app=app)
     except Exception as e:
         print(f"Error initializing Firebase: {e}")
         raise e
