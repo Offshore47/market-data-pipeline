@@ -7,15 +7,12 @@
     <!-- Load Tailwind CSS via CDN for styling -->
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
-        /* Optional: Apply smooth scrolling and set the font */
-        html { scroll-behavior: smooth; }
-        body { font-family: 'Inter', sans-serif; background-color: #f3f4f6; }
+        /* Tailwind configuration for smooth styling */
+        body { font-family: sans-serif; background-color: #f3f4f6; }
+        .drag-handle { cursor: grab; }
+        .drag-handle:active { cursor: grabbing; }
     </style>
     
-    <!-- Load React and ReactDOM Libraries (Loaded via CDN) -->
-    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
-    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
-
     <!-- Load Charting Libraries -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/moment.js/2.29.1/moment.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
@@ -23,12 +20,15 @@
     
 </head>
 <body>
-    <div id="root"></div>
+    <div id="root">
+        <!-- Application content will be rendered here -->
+    </div>
+    <div id="modal-container"></div>
     
-    <!-- Consolidated React Application Code (Pure JS/createElement syntax) -->
     <script>
         
         // --- SIMULATED DATA (Based on your successful Firestore output) ---
+        // NOTE: This array is what your app will display.
         const SIMULATED_STOCKS = [
             { id: 'JPM', symbol: 'JPM', score: 7.567, pe: 14.2, sentiment: 0.85, volumeSurge: 1.5, secFilingsCount: 1 },
             { id: 'JNJ', symbol: 'JNJ', score: 7.210, pe: 18.8, sentiment: 0.80, volumeSurge: 1.3, secFilingsCount: 0 },
@@ -47,387 +47,270 @@
             { id: 'TSLA', symbol: 'TSLA', score: 3.831, pe: 255.3, sentiment: 0.45, volumeSurge: 3.0, secFilingsCount: 0 },
         ];
 
-
-        // --- Configuration ---
+        // --- Configuration (Same keys used in your Python script) ---
         const CHART_API_KEY = "YOUR_CHART_API_KEY_HERE"; 
         const FINANCIAL_API_BASE_URL = "https://www.alphavantage.co/query"; 
+        const userId = "SIMULATED_USER_123";
 
+        // --- Global State and Handlers for Movable Modal ---
+        let currentChart = null;
+        let isDragging = false;
+        let dragStartPos = { x: 0, y: 0 };
+        let modalPos = { x: 50, y: 50 };
 
-        // --- INLINE SVG ICON COMPONENTS (Pure JS) ---
-        // FIX: Ensure all functions are defined using React.createElement explicitly
-        const Icon = ({ name, size = 24, className }) => {
+        const getIconSvg = (name, size = 24, className = "") => {
             let svgContent = '';
             let viewBox = '0 0 24 24';
 
             switch (name) {
-                case 'dollar-sign': 
-                    svgContent = '<line x1="12" y1="1" x2="12" y2="23"></line><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"></path>'; 
-                    break;
-                case 'log-in':
-                    svgContent = '<path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"></path><polyline points="10 17 15 12 10 7"></polyline><line x1="15" y1="12" x2="3" y2="12"></line>';
-                    break;
-                case 'trending-up':
-                    svgContent = '<polyline points="23 6 13.5 15.5 8.5 10.5 1 18"></polyline><polyline points="17 6 23 6 23 12"></polyline>';
-                    break;
-                case 'x':
-                    svgContent = '<line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line>';
-                    break;
-                default: 
-                    return React.createElement('span', { className: className }, '?');
+                case 'dollar-sign': svgContent = '<line x1="12" y1="1" x2="12" y2="23"></line><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"></path>'; break;
+                case 'log-in': svgContent = '<path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"></path><polyline points="10 17 15 12 10 7"></polyline><line x1="15" y1="12" x2="3" y2="12"></line>'; break;
+                case 'trending-up': svgContent = '<polyline points="23 6 13.5 15.5 8.5 10.5 1 18"></polyline><polyline points="17 6 23 6 23 12"></polyline>'; break;
+                case 'x': svgContent = '<line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line>'; break;
+                default: return `<span class="${className}">?</span>`;
             }
 
-            return React.createElement('svg', {
-                className: className,
-                width: size,
-                height: size,
-                viewBox: viewBox,
-                fill: "none",
-                stroke: "currentColor",
-                strokeWidth: 2,
-                strokeLinecap: "round",
-                strokeLinejoin: "round",
-                dangerouslySetInnerHTML: { __html: svgContent }
+            return `<svg class="${className}" width="${size}" height="${size}" viewBox="${viewBox}" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${svgContent}</svg>`;
+        };
+
+        const updateModalPosition = (x, y) => {
+            const modal = document.getElementById('chart-modal');
+            if (!modal) return;
+            const bounds = modal.getBoundingClientRect();
+            const maxX = window.innerWidth - bounds.width;
+            const maxY = window.innerHeight - bounds.height;
+            
+            x = Math.max(0, Math.min(x, maxX));
+            y = Math.max(0, Math.min(y, maxY));
+            
+            modalPos = { x, y };
+            modal.style.top = `${y}px`;
+            modal.style.left = `${x}px`;
+        };
+
+        const handleMouseDown = (e) => {
+            if (e.target.closest('.drag-handle')) {
+                isDragging = true;
+                dragStartPos = {
+                    x: e.clientX - modalPos.x,
+                    y: e.clientY - modalPos.y,
+                };
+            }
+        };
+
+        const handleMouseMove = (e) => {
+            if (!isDragging) return;
+            let newX = e.clientX - dragStartPos.x;
+            let newY = e.clientY - dragStartPos.y; 
+            updateModalPosition(newX, newY);
+        };
+
+        const handleMouseUp = () => {
+            isDragging = false;
+        };
+        
+        const renderChart = (data) => {
+            const canvas = document.getElementById('chart-canvas');
+            if (!canvas || data.data.length === 0) return;
+
+            if (currentChart) {
+                currentChart.destroy();
+            }
+
+            const ctx = canvas.getContext('2d');
+            currentChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    datasets: [{
+                        label: `${data.symbol} Daily Close Price`,
+                        data: data.data,
+                        parsing: { xAxisKey: 'x', yAxisKey: 'y' },
+                        borderColor: 'rgb(75, 192, 192)',
+                        tension: 0.1,
+                        pointRadius: 0
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { display: true },
+                        title: { display: true, text: `${data.symbol} Historical Performance`, font: { size: 16 } }
+                    },
+                    scales: {
+                        x: {
+                            type: 'time',
+                            time: { unit: 'day', tooltipFormat: 'MMM D, YYYY' },
+                            title: { display: true, text: 'Date' }
+                        },
+                        y: { 
+                            title: { display: true, text: 'Price ($)' },
+                            ticks: {
+                                callback: function(value) { return '$' + value; }
+                            }
+                        }
+                    }
+                }
             });
         };
 
-        const LogInIcon = (props) => React.createElement(Icon, { name: 'log-in', ...props });
-        const TrendingUpIcon = (props) => React.createElement(Icon, { name: 'trending-up', ...props });
-        const DollarSignIcon = (props) => React.createElement(Icon, { name: 'dollar-sign', ...props });
-        const XIcon = (props) => React.createElement(Icon, { name: 'x', ...props });
+        const renderChartModal = ({ symbol, data = [], loading = false, error = null }) => {
+            let content;
+            if (loading) {
+                content = `<div class="text-indigo-600 animate-spin mr-3">${getIconSvg('trending-up', 32)}</div>`;
+            } else if (error) {
+                content = `<div class="text-red-500 text-center p-4"><p class="font-bold">Data Fetch Error</p><p class="text-sm">${error}</p><p class="text-xs mt-2">Verify your API Key and check console.</p></div>`;
+            } else if (data.length === 0) {
+                 content = `<div class="text-gray-500 text-center"><p class="font-bold">No Chart Data Available</p><p class="text-sm">The API did not return historical data for this symbol.</p></div>`;
+            } else {
+                // IMPORTANT: The canvas needs an ID for Chart.js to render
+                content = `<canvas id="chart-canvas" class="w-full h-full"></canvas>`;
+            }
 
+            // The modal HTML structure
+            return `
+                <div id="chart-modal"
+                    class="fixed bg-white/95 backdrop-blur-sm shadow-2xl rounded-xl z-50 border border-gray-200 w-11/12 md:w-3/4 lg:w-2/3 max-w-4xl"
+                    style="top: ${modalPos.y}px; left: ${modalPos.x}px; display: block;"
+                    onmousedown="handleMouseDown(event)">
+                    
+                    <div class="drag-handle p-3 bg-indigo-600 text-white flex justify-between items-center rounded-t-xl cursor-grab">
+                        <h3 class="text-lg font-bold">Chart: ${symbol}</h3>
+                        <button onclick="closeChartModal()"
+                            class="p-1 rounded-full hover:bg-indigo-700 transition-colors"
+                            title="Close Chart">
+                            ${getIconSvg('x', 20)}
+                        </button>
+                    </div>
+                    
+                    <div class="p-4 h-96 flex items-center justify-center">
+                        ${content}
+                    </div>
+                    
+                    <p class="text-xs text-gray-500 p-2 text-center border-t">
+                        Chart Data Source: Alpha Vantage (API Key must be configured)
+                    </p>
+                </div>
+            `;
+        };
 
-        // --- APP COMPONENT ---
+        const fetchStockData = async (symbol) => {
+            const modalContainer = document.getElementById('modal-container');
+            if (!modalContainer) return;
 
-        const App = () => {
-            const { useState, useEffect, useRef, useCallback } = React;
+            // Render loading modal
+            modalContainer.innerHTML = renderChartModal({ symbol: symbol, loading: true, data: [] });
+            document.getElementById('chart-modal').style.display = 'block';
             
-            const [userId, setUserId] = useState("SIMULATED_USER_123");
-            const [topStocks, setTopStocks] = useState(SIMULATED_STOCKS); // USE SIMULATED DATA
-            const [loading, setLoading] = useState(false); // SET TO FALSE
-            const [error, setError] = useState(null);
-            const [chartData, setChartData] = useState(null);
-            const [modalPos, setModalPos] = useState({ x: 50, y: 50 });
-            const modalRef = useRef(null);
-            
+            // Re-attach backdrop listener (needs to be done after content is rendered)
+            const backdrop = document.getElementById('backdrop');
+            if (backdrop) backdrop.style.display = 'block';
 
-            // 3. Data Fetching Function for Charting (Exponential Backoff included)
-            const fetchStockData = useCallback(async (symbol) => {
-                if (!CHART_API_KEY || CHART_API_KEY === "YOUR_CHART_API_KEY_HERE") {
-                    setError("Please set a valid CHART_API_KEY to fetch chart data.");
+
+            if (CHART_API_KEY === "YOUR_CHART_API_KEY_HERE") {
+                const error = "Please set a valid CHART_API_KEY in the index.html file to fetch chart data.";
+                modalContainer.innerHTML = renderChartModal({ symbol: symbol, error: error });
+                return;
+            }
+
+            const url = `${FINANCIAL_API_BASE_URL}?function=TIME_SERIES_DAILY_ADJUSTED&symbol=${symbol}&apikey=${CHART_API_KEY}`;
+            
+            try {
+                const response = await fetch(url);
+                const data = await response.json();
+                
+                if (response.status !== 200 || data["Error Message"] || data["Note"] || !data["Time Series (Daily)"]) {
+                    const errorMsg = data["Error Message"] || data["Note"] || "Failed to load historical data. Check API key/limits.";
+                    modalContainer.innerHTML = renderChartModal({ symbol: symbol, error: errorMsg });
                     return;
                 }
-
-                const url = `${FINANCIAL_API_BASE_URL}?function=TIME_SERIES_DAILY_ADJUSTED&symbol=${symbol}&apikey=${CHART_API_KEY}`;
-                const MAX_RETRIES = 5;
-                let attempt = 0;
                 
-                setChartData({ symbol, data: [], loading: true }); 
+                const timeSeries = data["Time Series (Daily)"];
+                const dates = Object.keys(timeSeries).sort();
+                const chartPoints = dates.map(date => ({
+                    x: date,
+                    y: parseFloat(timeSeries[date]["4. close"])
+                }));
+                
+                // Render chart structure and then render the Chart.js visualization
+                modalContainer.innerHTML = renderChartModal({ symbol: symbol, data: chartPoints });
+                renderChart({ symbol: symbol, data: chartPoints });
 
-                while (attempt < MAX_RETRIES) {
-                    try {
-                        const response = await fetch(url);
-                        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-                        
-                        const data = await response.json();
-                        
-                        if (data["Error Message"] || data["Note"]) {
-                            throw new Error(data["Error Message"] || data["Note"] || "API returned an error or limit warning. Check your API key and rate limits.");
-                        }
-                        
-                        const timeSeries = data["Time Series (Daily)"];
-                        if (!timeSeries) {
-                            throw new Error("Invalid data structure received from API. Check if the symbol is correct.");
-                        }
-
-                        const dates = Object.keys(timeSeries).sort();
-                        const chartPoints = dates.map(date => ({
-                            x: date,
-                            y: parseFloat(timeSeries[date]["4. close"])
-                        }));
-
-                        setChartData({ symbol, data: chartPoints, loading: false });
-                        return; 
-                        
-                    } catch (e) {
-                        console.warn(`Attempt ${attempt + 1} failed for ${symbol}: ${e.message}`);
-                        setChartData({ symbol, data: [], loading: false, error: e.message });
-                        attempt++;
-                        if (attempt >= MAX_RETRIES) {
-                            setError(`Failed to fetch historical data for ${symbol} after ${MAX_RETRIES} attempts. Error: ${e.message}`);
-                            break;
-                        }
-                        const delay = Math.pow(2, attempt) * 1000 + Math.random() * 1000;
-                        await new Promise(resolve => setTimeout(resolve, delay));
-                    }
-                }
-            }, []);
-
-            // 4. Movable Chart Modal Logic
-            const ChartModal = ({ data, onClose }) => {
-                const canvasRef = useRef(null);
-                const [isDragging, setIsDragging] = useState(false);
-                const dragStartPos = useRef({ x: 0, y: 0 });
-                const chartInstance = useRef(null);
-
-                // Chart Rendering Logic
-                useEffect(() => {
-                    if (canvasRef.current && data && data.data.length > 0) {
-                        if (chartInstance.current) {
-                            chartInstance.current.destroy(); 
-                        }
-
-                        const ctx = canvasRef.current.getContext('2d');
-                        const moment = window.moment; 
-                        
-                        chartInstance.current = new Chart(ctx, {
-                            type: 'line',
-                            data: {
-                                datasets: [{
-                                    label: `${data.symbol} Daily Close Price`,
-                                    data: data.data,
-                                    parsing: { xAxisKey: 'x', yAxisKey: 'y' },
-                                    borderColor: 'rgb(75, 192, 192)',
-                                    tension: 0.1,
-                                    pointRadius: 0
-                                }]
-                            },
-                            options: {
-                                responsive: true,
-                                maintainAspectRatio: false,
-                                plugins: {
-                                    legend: { display: true },
-                                    title: { display: true, text: `${data.symbol} Historical Performance`, font: { size: 16 } }
-                                },
-                                scales: {
-                                    x: {
-                                        type: 'time',
-                                        time: { unit: 'day', tooltipFormat: 'MMM D, YYYY' },
-                                        title: { display: true, text: 'Date' }
-                                    },
-                                    y: { 
-                                        title: { display: true, text: 'Price ($)' },
-                                        ticks: {
-                                            callback: function(value, index, ticks) {
-                                                return '$' + value;
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        });
-                    }
-                    return () => {
-                        if (chartInstance.current) {
-                            chartInstance.current.destroy();
-                        }
-                    };
-                }, [data]);
-
-
-                // Drag Handler Logic
-                const handleMouseDown = (e) => {
-                    if (e.target.closest('.drag-handle')) {
-                        setIsDragging(true);
-                        dragStartPos.current = {
-                            x: e.clientX - modalPos.x,
-                            y: e.clientY - modalPos.y,
-                        };
-                    }
-                };
-
-                const handleMouseMove = useCallback((e) => {
-                    if (!isDragging) return;
-                    let newX = e.clientX - dragStartPos.current.x;
-                    let newY = e.clientY - dragStartPos.current.y; 
-                    
-                    const bounds = modalRef.current.getBoundingClientRect();
-                    const maxX = window.innerWidth - bounds.width;
-                    const maxY = window.innerHeight - bounds.height;
-                    
-                    newX = Math.max(0, Math.min(newX, maxX));
-                    newY = Math.max(0, Math.min(newY, maxY));
-
-                    setModalPos({ x: newX, y: newY });
-                }, [isDragging]);
-
-                const handleMouseUp = useCallback(() => {
-                    setIsDragging(false);
-                }, []);
-
-                useEffect(() => {
-                    if (isDragging) {
-                        window.addEventListener('mousemove', handleMouseMove);
-                        window.addEventListener('mouseup', handleMouseUp);
-                    } else {
-                        window.removeEventListener('mousemove', handleMouseMove);
-                        window.removeEventListener('mouseup', handleMouseUp);
-                    }
-                    return () => {
-                        window.removeEventListener('mousemove', handleMouseMove);
-                        window.removeEventListener('mouseup', handleMouseUp);
-                    };
-                }, [isDragging, handleMouseMove, handleMouseUp]);
-
-
-                return (
-                    React.createElement('div', { 
-                        ref: modalRef,
-                        className: "fixed bg-white/95 backdrop-blur-sm shadow-2xl rounded-xl z-50 border border-gray-200 w-11/12 md:w-3/4 lg:w-2/3 max-w-4xl transition-shadow",
-                        style: { top: `${modalPos.y}px`, left: `${modalPos.x}px`, cursor: isDragging ? 'grabbing' : 'default' }
-                    },
-                        React.createElement('div', { 
-                            className: "drag-handle p-3 bg-indigo-600 text-white flex justify-between items-center rounded-t-xl cursor-grab active:cursor-grabbing",
-                            onMouseDown: handleMouseDown
-                        },
-                            React.createElement('h3', { className: "text-lg font-bold" }, `Chart: ${data.symbol}`),
-                            React.createElement('button', { 
-                                onClick: onClose, 
-                                className: "p-1 rounded-full hover:bg-indigo-700 transition-colors",
-                                title: "Close Chart"
-                            },
-                                React.createElement(XIcon, { size: 20 })
-                            )
-                        ),
-                        React.createElement('div', { className: "p-4 h-96 flex items-center justify-center" },
-                            data.loading && (
-                                React.createElement('div', { className: "text-indigo-600 animate-spin mr-3" },
-                                    React.createElement(TrendingUpIcon, { size: 32 })
-                                )
-                            ),
-                            data.error && (
-                                React.createElement('div', { className: "text-red-500 text-center p-4" },
-                                    React.createElement('p', { className: "font-bold" }, "Data Fetch Error"),
-                                    React.createElement('p', { className: "text-sm" }, data.error),
-                                    React.createElement('p', { className: "text-xs mt-2" }, "Check console for details or verify your API Key.")
-                                )
-                            ),
-                            data.data.length > 0 && !data.loading && (
-                                React.createElement('canvas', { ref: canvasRef, className: "w-full h-full" })
-                            ),
-                            data.data.length === 0 && !data.loading && !data.error && (
-                                React.createElement('div', { className: "text-gray-500 text-center" },
-                                    React.createElement('p', { className: "font-bold" }, "No Chart Data Available"),
-                                    React.createElement('p', { className: "text-sm" }, "The API did not return historical data for this symbol.")
-                                )
-                            )
-                        ),
-                        React.createElement('p', { className: "text-xs text-gray-500 p-2 text-center border-t" },
-                            "Chart Data Source: Alpha Vantage (API Key must be configured)"
-                        )
-                    )
-                );
-            };
-
-            // --- RENDER ---
-            
-            if (loading) {
-                return (
-                    React.createElement('div', { className: "flex justify-center items-center h-screen bg-gray-50" },
-                        React.createElement('div', { className: "text-indigo-600 animate-spin mr-3" },
-                            React.createElement(TrendingUpIcon, { size: 24 })
-                        ),
-                        React.createElement('p', { className: "text-lg font-medium text-gray-700" }, "Loading application...")
-                    )
-                );
-            }
-
-            if (error && !chartData) {
-                return (
-                    React.createElement('div', { className: "p-8 max-w-xl mx-auto mt-20 bg-red-100 border-l-4 border-red-500 text-red-700 rounded-lg shadow-lg" },
-                        React.createElement('p', { className: "font-bold" }, "Application Error"),
-                        React.createElement('p', null, error),
-                        React.createElement('p', { className: "mt-2 text-sm" }, "Please check the console for configuration details.")
-                    )
-                );
-            }
-
-            return (
-                React.createElement('div', { className: "min-h-screen bg-gray-100 p-4 font-sans antialiased" },
-                    // Header
-                    React.createElement('header', { className: "flex justify-between items-center p-4 bg-white shadow-md rounded-lg mb-6" },
-                        React.createElement('h1', { className: "text-2xl font-extrabold text-indigo-700 flex items-center" },
-                            React.createElement(DollarSignIcon, { size: 24, className: "w-6 h-6 mr-2" }),
-                            "Top 20 Stock Screener"
-                        ),
-                        React.createElement('div', { className: "text-sm text-gray-600 flex items-center" },
-                            React.createElement('span', { className: "text-green-500 mr-1" }, "●"),
-                            "Logged in as: ",
-                            React.createElement('span', { className: "font-mono text-xs ml-1 text-gray-800 break-all" }, "SIMULATED_USER_123")
-                        )
-                    ),
-
-                    // Main Content
-                    React.createElement('main', { className: "max-w-4xl mx-auto" },
-                        React.createElement('div', { className: "bg-white p-6 rounded-xl shadow-lg" },
-                            React.createElement('h2', { className: "text-xl font-semibold mb-4 text-indigo-600 border-b pb-2" },
-                                "Top 20 Calculated Picks (Simulated Data)"
-                            ),
-                            
-                            React.createElement('div', { className: "overflow-x-auto rounded-lg border border-gray-200" },
-                                React.createElement('table', { className: "min-w-full divide-y divide-gray-200" },
-                                    React.createElement('thead', { className: "bg-gray-50" },
-                                        React.createElement('tr', null,
-                                            React.createElement('th', { className: "px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider" }, "Symbol"),
-                                            React.createElement('th', { className: "px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider" }, "P/E Ratio"),
-                                            React.createElement('th', { className: "px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider" }, "Sentiment Score"),
-                                            React.createElement('th', { className: "px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider" }, "Volume Surge"),
-                                            React.createElement('th', { className: "px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider" }, "Rank Score"),
-                                            React.createElement('th', { className: "relative px-6 py-3" }, React.createElement('span', { className: "sr-only" }, "Action"))
-                                        )
-                                    ),
-                                    React.createElement('tbody', { className: "bg-white divide-y divide-gray-200" },
-                                        topStocks.slice(0, 20).map((stock, index) => (
-                                            React.createElement('tr', { key: stock.id, className: "hover:bg-indigo-50 transition duration-150" },
-                                                React.createElement('td', { className: "px-6 py-4 whitespace-nowrap text-sm font-medium text-indigo-600" },
-                                                    React.createElement('span', { className: "font-bold mr-2 text-gray-500" }, `${index + 1}.`),
-                                                    stock.symbol || 'N/A'
-                                                ),
-                                                React.createElement('td', { className: "px-6 py-4 whitespace-nowrap text-sm text-gray-900" }, stock.pe ? stock.pe.toFixed(1) : '—'),
-                                                React.createElement('td', { className: "px-6 py-4 whitespace-nowrap text-sm text-gray-900" }, stock.sentiment ? stock.sentiment.toFixed(2) : '—'),
-                                                React.createElement('td', { className: "px-6 py-4 whitespace-nowrap text-sm text-gray-900" }, stock.volumeSurge ? `${stock.volumeSurge.toFixed(1)}x` : '—'),
-                                                React.createElement('td', { className: "px-6 py-4 whitespace-nowrap text-sm font-bold text-right text-green-700" }, stock.score ? stock.score.toFixed(3) : '0.000'),
-                                                React.createElement('td', { className: "px-6 py-4 whitespace-nowrap text-right text-sm font-medium" },
-                                                    React.createElement('button', {
-                                                        onClick: () => fetchStockData(stock.symbol),
-                                                        className: "inline-flex items-center px-3 py-1 border border-transparent text-sm leading-4 font-medium rounded-md text-white bg-green-500 hover:bg-green-600 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 transition-colors"
-                                                    }, "View Chart")
-                                                )
-                                            )
-                                        ))
-                                    )
-                                )
-                            )
-                        )
-                    ),
-
-                    // Chart Modal
-                    chartData && React.createElement(ChartModal, { data: chartData, onClose: () => setChartData(null) }),
-
-                    // Backdrop to close modal
-                    chartData && React.createElement('div', { 
-                        className: "fixed inset-0 bg-black/10 z-40",
-                        onClick: () => setChartData(null)
-                    })
-                )
-            );
-        };
-        
-        // Render the App component into the root element
-        document.addEventListener('DOMContentLoaded', async () => {
-            try {
-                // RENDER APP IMMEDIATELY with simulated data
-                const rootElement = document.getElementById('root');
-                if (rootElement) {
-                    const root = ReactDOM.createRoot(rootElement);
-                    root.render(React.createElement(App, null));
-                }
             } catch (e) {
-                console.error("Critical error during application initialization:", e);
-                const rootElement = document.getElementById('root');
-                if (rootElement) {
-                     rootElement.innerHTML = '<div style="padding: 20px; color: red;">FATAL ERROR: Could not load essential scripts (React). Check network connection or console for details.</div>';
-                }
+                modalContainer.innerHTML = renderChartModal({ symbol: symbol, error: `Network error: ${e.message}` });
             }
+        };
+
+        const closeChartModal = () => {
+            const modal = document.getElementById('chart-modal');
+            const backdrop = document.getElementById('backdrop');
+            if (modal) modal.style.display = 'none';
+            if (backdrop) backdrop.style.display = 'none';
+            
+            if (currentChart) {
+                currentChart.destroy();
+                currentChart = null;
+            }
+        };
+
+        // --- Main App Renderer ---
+        const renderApp = () => {
+            const appHtml = `
+                <div class="min-h-screen bg-gray-100 p-4 font-sans antialiased">
+                    <header class="flex justify-between items-center p-4 bg-white shadow-md rounded-lg mb-6">
+                        <h1 class="text-2xl font-extrabold text-indigo-700 flex items-center">
+                            ${getIconSvg('dollar-sign', 24, "w-6 h-6 mr-2")}
+                            Top 20 Stock Screener
+                        </h1>
+                        <div class="text-sm text-gray-600 flex items-center">
+                            ${getIconSvg('log-in', 20, "w-4 h-4 mr-1 text-green-500")}
+                            Logged in as: <span class="font-mono text-xs ml-1 text-gray-800 break-all">${userId}</span>
+                        </div>
+                    </header>
+
+                    <main class="max-w-4xl mx-auto">
+                        <div class="bg-white p-6 rounded-xl shadow-lg">
+                            <h2 class="text-xl font-semibold mb-4 text-indigo-600 border-b pb-2">
+                                Top 20 Calculated Picks (Simulated Data)
+                            </h2>
+                            
+                            <div class="overflow-x-auto rounded-lg border border-gray-200">
+                                <table class="min-w-full divide-y divide-gray-200">
+                                    <thead class="bg-gray-50">
+                                        <tr>
+                                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Symbol</th>
+                                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">P/E Ratio</th>
+                                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Sentiment Score</th>
+                                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Volume Surge</th>
+                                            <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Rank Score</th>
+                                            <th class="relative px-6 py-3"><span class="sr-only">Action</span></th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        ${SIMULATED_STOCKS.slice(0, 20).map(createTableRow).join('')}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </main>
+
+                    <!-- Modal Container and Backdrop -->
+                    <div id="modal-container"></div>
+                    <div id="backdrop" class="fixed inset-0 bg-black/10 z-40" style="display: none;" onclick="closeChartModal()"></div>
+                </div>
+            `;
+            document.getElementById('root').innerHTML = appHtml;
+        };
+
+
+        // --- Initialization ---
+        document.addEventListener('DOMContentLoaded', () => {
+            // Attach drag listeners globally when the document loads
+            document.addEventListener('mousemove', handleMouseMove);
+            document.addEventListener('mouseup', handleMouseUp);
+            
+            renderApp();
+
         });
     </script>
 </body>
