@@ -3,6 +3,7 @@ import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
 import { getFirestore, collection, onSnapshot, query, doc, setDoc } from 'firebase/firestore';
 import Chart from 'chart.js/auto';
+// NOTE: Removed 'chartjs-adapter-moment' import to fix compilation. It is loaded via script tag below.
 import { Minus, X, LogIn, TrendingUp, DollarSign } from 'lucide-react';
 
 // --- CONFIGURATION & UTILITIES ---
@@ -12,9 +13,8 @@ const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
 const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
 const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : '';
 
-// IMPORTANT: This key is read from your GitHub setup (CHART_API_KEY secret)
-// *** REPLACE THIS WITH YOUR ACTUAL ALPHA VANTAGE/CHARTING API KEY ***
-const CHART_API_KEY = "YOUR_CHART_API_KEY_HERE"; 
+// IMPORTANT: This key must be set manually on the client side.
+const CHART_API_KEY = "W2Z0Q8BNLULHDJ6H"; 
 // Using Alpha Vantage as the chart data source
 const FINANCIAL_API_BASE_URL = "https://www.alphavantage.co/query"; 
 
@@ -76,7 +76,7 @@ const App = () => {
         if (!isAuthReady || !db) return;
 
         // Path for public data: /artifacts/{appId}/public/data/topStocks
-        // Uses the default-app-id we set in the GitHub Variable
+        // This is where the GitHub Action script writes its results.
         const collectionPath = `artifacts/${appId}/public/data/topStocks`;
         const q = query(collection(db, collectionPath));
         
