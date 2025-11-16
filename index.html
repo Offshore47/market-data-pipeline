@@ -21,64 +21,38 @@
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-moment@1.0.1/dist/chartjs-adapter-moment.min.js"></script>
     
-    <!-- FINAL FIX: Use compatible Firebase SDK V8 -->
-    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
-    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-firestore.js"></script>
-    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-auth.js"></script>
-    
 </head>
 <body>
     <div id="root"></div>
     
     <!-- Consolidated React Application Code (Pure JS/createElement syntax) -->
     <script>
-        // Global variables required by the component (as established in the pipeline)
-        window.__app_id = 'default-app-id';
-        window.__firebase_config = JSON.stringify({}); 
-
-        // =========================================================================
-        // START: Firebase and React Setup - CORE LOGIC DEFINITIONS
-        // =========================================================================
-
-        const { useState, useEffect, useRef, useCallback, createElement } = React;
-        const Chart = window.Chart;
         
-        // --- Configuration ---
-        const appId = window.__app_id;
-        const firebaseConfig = JSON.parse(window.__firebase_config);
-        const initialAuthToken = window.__initial_auth_token;
+        // --- SIMULATED DATA (Based on your successful Firestore output) ---
+        // NOTE: This array is what your app will display.
+        const SIMULATED_STOCKS = [
+            { id: 'JPM', symbol: 'JPM', score: 7.567, pe: 14.2, sentiment: 0.85, volumeSurge: 1.5, secFilingsCount: 1 },
+            { id: 'JNJ', symbol: 'JNJ', score: 7.210, pe: 18.8, sentiment: 0.80, volumeSurge: 1.3, secFilingsCount: 0 },
+            { id: 'PG', symbol: 'PG', score: 7.046, pe: 20.6, sentiment: 0.75, volumeSurge: 1.1, secFilingsCount: 1 },
+            { id: 'BABA', symbol: 'BABA', score: 6.629, pe: 19.0, sentiment: 0.65, volumeSurge: 1.8, secFilingsCount: 0 },
+            { id: 'V', symbol: 'V', score: 6.560, pe: 31.5, sentiment: 0.92, volumeSurge: 1.0, secFilingsCount: 0 },
+            { id: 'HD', symbol: 'HD', score: 6.446, pe: 24.7, sentiment: 0.77, volumeSurge: 2.0, secFilingsCount: 1 },
+            { id: 'KO', symbol: 'KO', score: 6.381, pe: 23.5, sentiment: 0.70, volumeSurge: 1.2, secFilingsCount: 0 },
+            { id: 'BAC', symbol: 'BAC', score: 6.308, pe: 13.0, sentiment: 0.68, volumeSurge: 1.6, secFilingsCount: 1 },
+            { id: 'GOOGL', symbol: 'GOOGL', score: 6.176, pe: 26.9, sentiment: 0.78, volumeSurge: 1.4, secFilingsCount: 1 },
+            { id: 'ADBE', symbol: 'ADBE', score: 6.081, pe: 19.9, sentiment: 0.62, volumeSurge: 1.9, secFilingsCount: 0 },
+            { id: 'MSFT', symbol: 'MSFT', score: 5.885, pe: 36.1, sentiment: 0.88, volumeSurge: 1.1, secFilingsCount: 1 },
+            { id: 'UNH', symbol: 'UNH', score: 5.858, pe: 16.6, sentiment: 0.55, volumeSurge: 1.0, secFilingsCount: 0 },
+            { id: 'AMZN', symbol: 'AMZN', score: 5.712, pe: 32.8, sentiment: 0.82, volumeSurge: 1.7, secFilingsCount: 1 },
+            { id: 'NVDA', symbol: 'NVDA', score: 4.356, pe: 53.4, sentiment: 0.95, volumeSurge: 2.5, secFilingsCount: 0 },
+            { id: 'TSLA', symbol: 'TSLA', score: 3.831, pe: 255.3, sentiment: 0.45, volumeSurge: 3.0, secFilingsCount: 0 },
+        ];
 
-        // IMPORTANT: This key must be set manually on the client side.
+
+        // --- Configuration ---
         const CHART_API_KEY = "YOUR_CHART_API_KEY_HERE"; 
         const FINANCIAL_API_BASE_URL = "https://www.alphavantage.co/query"; 
 
-
-        // --- Helper to get modern Firebase functions (V8 compatible) ---
-        const getFirebaseModules = () => {
-            // Since we load V8, we can use the global firebase object directly.
-            if (!window.firebase) {
-                console.error("Firebase object not defined. Check CDN loading.");
-                return {
-                    initializeApp: () => ({}), getAuth: () => ({}), signInAnonymously: () => ({}), 
-                    signInWithCustomToken: () => ({}), onAuthStateChanged: () => ({}), 
-                    getFirestore: () => ({}), collection: () => ({}), onSnapshot: () => ({}), 
-                    query: () => ({}), 
-                };
-            }
-            
-            // Accessing global objects defined by the CDN (V8 syntax)
-            return {
-                initializeApp: window.firebase.initializeApp,
-                getAuth: window.firebase.auth, 
-                signInAnonymously: window.firebase.auth().signInAnonymously,
-                signInWithCustomToken: window.firebase.auth().signInWithCustomToken,
-                onAuthStateChanged: window.firebase.auth().onAuthStateChanged,
-                getFirestore: window.firebase.firestore, 
-                collection: window.firebase.firestore().collection,
-                onSnapshot: window.firebase.firestore().onSnapshot,
-                query: window.firebase.firestore().query,
-            };
-        };
 
         // --- INLINE SVG ICON COMPONENTS (Pure JS) ---
         const Icon = ({ name, size = 24, className }) => {
@@ -121,90 +95,20 @@
         const DollarSignIcon = (props) => createElement(Icon, { name: 'dollar-sign', ...props });
         const XIcon = (props) => createElement(Icon, { name: 'x', ...props });
 
-
-        // --- APP COMPONENT ---
-
+        // --- React Hooks and Core Logic ---
+        const { useState, useEffect, useRef, useCallback, createElement } = React;
+        const Chart = window.Chart;
+        
         const App = () => {
-            const [db, setDb] = useState(null);
-            const [auth, setAuth] = useState(null);
-            const [userId, setUserId] = useState(null);
-            const [isAuthReady, setIsAuthReady] = useState(false);
-            const [topStocks, setTopStocks] = useState([]);
-            const [loading, setLoading] = useState(true);
+            const [userId, setUserId] = useState("SIMULATED_USER_123");
+            const [topStocks, setTopStocks] = useState(SIMULATED_STOCKS); // USE SIMULATED DATA
+            const [loading, setLoading] = useState(false); // SET TO FALSE
             const [error, setError] = useState(null);
             const [chartData, setChartData] = useState(null);
             const [modalPos, setModalPos] = useState({ x: 50, y: 50 });
             const modalRef = useRef(null);
             
-
-            // 1. Firebase Initialization and Authentication
-            useEffect(() => {
-                const modules = getFirebaseModules();
-                
-                try {
-                    if (window.firebase) {
-                       window.firebase.firestore().setLogLevel('debug'); 
-                    }
-                    
-                    const app = modules.initializeApp(firebaseConfig);
-                    const firestore = modules.getFirestore(app);
-                    const firebaseAuth = modules.getAuth(app);
-                    
-                    const signIn = async () => {
-                        try {
-                            if (initialAuthToken) {
-                                await modules.signInWithCustomToken(firebaseAuth, initialAuthToken);
-                            } else {
-                                await modules.signInAnonymously(firebaseAuth);
-                            }
-                        } catch (e) {
-                            console.error("Firebase sign-in failed:", e);
-                            setError("Authentication failed. Check console for details.");
-                        }
-                    };
-                    
-                    signIn().then(() => {
-                        modules.onAuthStateChanged(firebaseAuth, (user) => {
-                            setAuth(firebaseAuth);
-                            setDb(firestore);
-                            setUserId(user ? user.uid : null);
-                            setIsAuthReady(true);
-                            setLoading(false);
-                        });
-                    });
-
-                } catch (e) {
-                    console.error("Firebase initialization failed:", e);
-                    setError("Failed to initialize Firebase. Check console.");
-                    setLoading(false);
-                }
-            }, []);
-
-            // 2. Real-time Firestore Listener for Top Stocks
-            useEffect(() => {
-                if (!isAuthReady || !db) return;
-
-                const { collection, onSnapshot, query } = getFirebaseModules();
-
-                const collectionPath = `artifacts/${appId}/public/data/topStocks`;
-                const q = query(collection(db, collectionPath));
-                
-                const unsubscribe = onSnapshot(q, (snapshot) => {
-                    const stocks = [];
-                    snapshot.forEach((doc) => {
-                        stocks.push({ id: doc.id, ...doc.data() });
-                    });
-                    stocks.sort((a, b) => (b.score || 0) - (a.score || 0));
-                    setTopStocks(stocks);
-                    if (loading) setLoading(false);
-                }, (err) => {
-                    console.error("Firestore data snapshot error:", err);
-                    setError("Could not load stock data.");
-                    setLoading(false);
-                });
-
-                return () => unsubscribe();
-            }, [isAuthReady, db]);
+            // NOTE: All Firebase useEffects have been removed.
 
             // 3. Data Fetching Function for Charting (Exponential Backoff included)
             const fetchStockData = useCallback(async (symbol) => {
@@ -446,7 +350,7 @@
                             "Top 20 Stock Screener"
                         ),
                         createElement('div', { className: "text-sm text-gray-600 flex items-center" },
-                            createElement(LogInIcon, { size: 20, className: "w-4 h-4 mr-1 text-green-500" }),
+                            createElement('span', { className: "text-green-500 mr-1" }, "●"),
                             "Logged in as: ",
                             createElement('span', { className: "font-mono text-xs ml-1 text-gray-800 break-all" }, userId)
                         )
@@ -456,46 +360,40 @@
                     createElement('main', { className: "max-w-4xl mx-auto" },
                         createElement('div', { className: "bg-white p-6 rounded-xl shadow-lg" },
                             createElement('h2', { className: "text-xl font-semibold mb-4 text-indigo-600 border-b pb-2" },
-                                "Top 20 Calculated Picks"
+                                "Top 20 Calculated Picks (Simulated Data)"
                             ),
                             
-                            topStocks.length === 0 ? (
-                                createElement('p', { className: "text-gray-500 italic p-4 text-center" },
-                                    "No scored stocks available. Ensure your daily GitHub Action run finished successfully and check the Firestore path."
-                                )
-                            ) : (
-                                createElement('div', { className: "overflow-x-auto rounded-lg border border-gray-200" },
-                                    createElement('table', { className: "min-w-full divide-y divide-gray-200" },
-                                        createElement('thead', { className: "bg-gray-50" },
-                                            createElement('tr', null,
-                                                createElement('th', { className: "px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider" }, "Symbol"),
-                                                createElement('th', { className: "px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider" }, "P/E Ratio"),
-                                                createElement('th', { className: "px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider" }, "Sentiment Score"),
-                                                createElement('th', { className: "px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider" }, "Volume Surge"),
-                                                createElement('th', { className: "px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider" }, "Rank Score"),
-                                                createElement('th', { className: "relative px-6 py-3" }, createElement('span', { className: "sr-only" }, "Action"))
-                                            )
-                                        ),
-                                        createElement('tbody', { className: "bg-white divide-y divide-gray-200" },
-                                            topStocks.slice(0, 20).map((stock, index) => (
-                                                createElement('tr', { key: stock.id, className: "hover:bg-indigo-50 transition duration-150" },
-                                                    createElement('td', { className: "px-6 py-4 whitespace-nowrap text-sm font-medium text-indigo-600" },
-                                                        createElement('span', { className: "font-bold mr-2 text-gray-500" }, `${index + 1}.`),
-                                                        stock.symbol || 'N/A'
-                                                    ),
-                                                    createElement('td', { className: "px-6 py-4 whitespace-nowrap text-sm text-gray-900" }, stock.pe ? stock.pe.toFixed(1) : '—'),
-                                                    createElement('td', { className: "px-6 py-4 whitespace-nowrap text-sm text-gray-900" }, stock.sentiment ? stock.sentiment.toFixed(2) : '—'),
-                                                    createElement('td', { className: "px-6 py-4 whitespace-nowrap text-sm text-gray-900" }, stock.volumeSurge ? `${stock.volumeSurge.toFixed(1)}x` : '—'),
-                                                    createElement('td', { className: "px-6 py-4 whitespace-nowrap text-sm font-bold text-right text-green-700" }, stock.score ? stock.score.toFixed(3) : '0.000'),
-                                                    createElement('td', { className: "px-6 py-4 whitespace-nowrap text-right text-sm font-medium" },
-                                                        createElement('button', {
-                                                            onClick: () => fetchStockData(stock.symbol),
-                                                            className: "inline-flex items-center px-3 py-1 border border-transparent text-sm leading-4 font-medium rounded-md text-white bg-green-500 hover:bg-green-600 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 transition-colors"
-                                                        }, "View Chart")
-                                                    )
-                                                )
-                                            ))
+                            createElement('div', { className: "overflow-x-auto rounded-lg border border-gray-200" },
+                                createElement('table', { className: "min-w-full divide-y divide-gray-200" },
+                                    createElement('thead', { className: "bg-gray-50" },
+                                        createElement('tr', null,
+                                            createElement('th', { className: "px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider" }, "Symbol"),
+                                            createElement('th', { className: "px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider" }, "P/E Ratio"),
+                                            createElement('th', { className: "px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider" }, "Sentiment Score"),
+                                            createElement('th', { className: "px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider" }, "Volume Surge"),
+                                            createElement('th', { className: "px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider" }, "Rank Score"),
+                                            createElement('th', { className: "relative px-6 py-3" }, createElement('span', { className: "sr-only" }, "Action"))
                                         )
+                                    ),
+                                    createElement('tbody', { className: "bg-white divide-y divide-gray-200" },
+                                        topStocks.slice(0, 20).map((stock, index) => (
+                                            createElement('tr', { key: stock.id, className: "hover:bg-indigo-50 transition duration-150" },
+                                                createElement('td', { className: "px-6 py-4 whitespace-nowrap text-sm font-medium text-indigo-600" },
+                                                    createElement('span', { className: "font-bold mr-2 text-gray-500" }, `${index + 1}.`),
+                                                    stock.symbol || 'N/A'
+                                                ),
+                                                createElement('td', { className: "px-6 py-4 whitespace-nowrap text-sm text-gray-900" }, stock.pe ? stock.pe.toFixed(1) : '—'),
+                                                createElement('td', { className: "px-6 py-4 whitespace-nowrap text-sm text-gray-900" }, stock.sentiment ? stock.sentiment.toFixed(2) : '—'),
+                                                createElement('td', { className: "px-6 py-4 whitespace-nowrap text-sm text-gray-900" }, stock.volumeSurge ? `${stock.volumeSurge.toFixed(1)}x` : '—'),
+                                                createElement('td', { className: "px-6 py-4 whitespace-nowrap text-sm font-bold text-right text-green-700" }, stock.score ? stock.score.toFixed(3) : '0.000'),
+                                                createElement('td', { className: "px-6 py-4 whitespace-nowrap text-right text-sm font-medium" },
+                                                    createElement('button', {
+                                                        onClick: () => fetchStockData(stock.symbol),
+                                                        className: "inline-flex items-center px-3 py-1 border border-transparent text-sm leading-4 font-medium rounded-md text-white bg-green-500 hover:bg-green-600 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 transition-colors"
+                                                    }, "View Chart")
+                                                )
+                                            )
+                                        ))
                                     )
                                 )
                             )
@@ -517,21 +415,17 @@
         // Render the App component into the root element
         document.addEventListener('DOMContentLoaded', async () => {
             try {
-                // WAIT for Firebase to load before running App logic
-                await loadFirebaseSdk();
-
+                // RENDER APP IMMEDIATELY with simulated data
                 const rootElement = document.getElementById('root');
                 if (rootElement) {
-                    // FIX: Use modern React 18 createRoot API 
                     const root = ReactDOM.createRoot(rootElement);
-                    // FIX: Pass the App component directly to the render function.
                     root.render(createElement(App, null));
                 }
             } catch (e) {
                 console.error("Critical error during application initialization:", e);
                 const rootElement = document.getElementById('root');
                 if (rootElement) {
-                     rootElement.innerHTML = '<div style="padding: 20px; color: red;">FATAL ERROR: Could not load essential scripts (Firebase/React). Check network connection or console for details.</div>';
+                     rootElement.innerHTML = '<div style="padding: 20px; color: red;">FATAL ERROR: Could not load essential scripts (React). Check network connection or console for details.</div>';
                 }
             }
         });
