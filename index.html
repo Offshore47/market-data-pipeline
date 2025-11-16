@@ -29,7 +29,6 @@
     <script>
         
         // --- SIMULATED DATA (Based on your successful Firestore output) ---
-        // NOTE: This array is what your app will display.
         const SIMULATED_STOCKS = [
             { id: 'JPM', symbol: 'JPM', score: 7.567, pe: 14.2, sentiment: 0.85, volumeSurge: 1.5, secFilingsCount: 1 },
             { id: 'JNJ', symbol: 'JNJ', score: 7.210, pe: 18.8, sentiment: 0.80, volumeSurge: 1.3, secFilingsCount: 0 },
@@ -50,7 +49,8 @@
 
 
         // --- Configuration ---
-        const CHART_API_KEY = "YOUR_CHART_API_KEY_HERE"; 
+        // FINAL FIX: Read environment variable injected by Vercel for the front-end key.
+        const CHART_API_KEY = process.env.CHART_API_KEY || "PLACEHOLDER_NOT_SET";
         const FINANCIAL_API_BASE_URL = "https://www.alphavantage.co/query"; 
 
 
@@ -95,25 +95,23 @@
         const DollarSignIcon = (props) => createElement(Icon, { name: 'dollar-sign', ...props });
         const XIcon = (props) => createElement(Icon, { name: 'x', ...props });
 
-        // --- React Hooks and Core Logic ---
-        const { useState, useEffect, useRef, useCallback, createElement } = React;
-        const Chart = window.Chart;
-        
+
+        // --- APP COMPONENT ---
+
         const App = () => {
             const [userId, setUserId] = useState("SIMULATED_USER_123");
-            const [topStocks, setTopStocks] = useState(SIMULATED_STOCKS); // USE SIMULATED DATA
-            const [loading, setLoading] = useState(false); // SET TO FALSE
+            const [topStocks, setTopStocks] = useState(SIMULATED_STOCKS); 
+            const [loading, setLoading] = useState(false); 
             const [error, setError] = useState(null);
             const [chartData, setChartData] = useState(null);
             const [modalPos, setModalPos] = useState({ x: 50, y: 50 });
             const modalRef = useRef(null);
             
-            // NOTE: All Firebase useEffects have been removed.
 
             // 3. Data Fetching Function for Charting (Exponential Backoff included)
             const fetchStockData = useCallback(async (symbol) => {
-                if (!CHART_API_KEY || CHART_API_KEY === "YOUR_CHART_API_KEY_HERE") {
-                    setError("Please set a valid CHART_API_KEY to fetch chart data.");
+                if (!CHART_API_KEY || CHART_API_KEY === "PLACEHOLDER_NOT_SET") {
+                    setError("Please set a valid CHART_API_KEY in Vercel environment variables to fetch chart data.");
                     return;
                 }
 
