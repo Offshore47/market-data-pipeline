@@ -34,9 +34,9 @@ FINNHUB_BASE_URL = "https://finnhub.io/api/v1"
 TARGET_SYMBOL_COUNT = 200 
 # --------------------------------
 
-# --------------------------- 
-# LLM and News API Integration
-# ---------------------------
+# ===============================================
+# A. API CALLS & DATA FETCHERS (DEFINED FIRST)
+# ===============================================
 
 def fetch_news_headlines(symbol: str) -> str:
     """Fetches recent news headlines for a symbol using NEWSAPI."""
@@ -127,9 +127,6 @@ def get_sentiment_score(symbol: str, news_text: str) -> float:
     
     return random.uniform(0.4, 0.6) 
 
-# --------------------------- 
-# Finnhub API Integration (P/E and SEC Filings)
-# ---------------------------
 def fetch_finnhub_data(endpoint: str, symbol: str, params: dict = None) -> dict:
     """Generic helper for Finnhub API calls with retry."""
     if not FINANCIAL_API_KEY:
@@ -205,15 +202,18 @@ def get_sec_filing_count(symbol: str) -> int:
 
 def get_top_200_symbols() -> list:
     """
-    Attempts to fetch a list of highly relevant symbols using Finnhub News proxy.
-    If the API call fails or returns empty, returns a hardcoded list of major tickers.
+    Fetches a proxy list of up to 200 highly relevant symbols 
+    using Finnhub News endpoint (as a proxy for activity/market cap).
+    
+    Returns a list of unique ticker symbols.
     """
-    MAJOR_FALLBACK_LIST = ["MSFT", "AAPL", "GOOGL", "NVDA", "TSLA", "AMZN", "JPM", "V", "WMT", "KO", "BAC", "HD", "UNH", "PG", "JNJ", "MA", "V", "BABA", "TCEHY", "ADBE"]
+    MAJOR_FALLBACK_LIST = ["MSFT", "AAPL", "GOOGL", "NVDA", "TSLA", "AMZN", "JPM", "V", "WMT", "KO", "BAC", "HD", "UNH", "PG", "JNJ", "MA", "ADBE", "TCEHY", "BABA"]
     
     if not FINANCIAL_API_KEY:
         print("Finnhub API key missing. Using guaranteed fallback symbols.")
         return MAJOR_FALLBACK_LIST
 
+    # Fetch symbols that are mentioned in general news (proxy for most active/relevant)
     url = f"{FINNHUB_BASE_URL}/news?category=general&minId=0&token={FINANCIAL_API_KEY}"
     
     try:
@@ -228,17 +228,17 @@ def get_top_200_symbols() -> list:
                 symbols.update([s.strip() for s in related.split(',') if s.strip()])
                 
         # Filter out obvious non-stock tickers
-        ETF_KEYWORDS = ["ETF", "ETN", "FUND", "INDEX"]
+        ETF_KEYWORDS = ["ETF", "ETN", "FUND", "INDEX", "ETFS"]
         filtered_symbols = [
             s for s in symbols 
-            if s and len(s) <= 12 and 
-            s not in MAJOR_FALLBACK_LIST and # Avoid duplicate processing if they are in both lists
+            if s and 
+            s not in MAJOR_FALLBACK_LIST and 
             not any(tok in s for tok in ETF_KEYWORDS) and
-            not any(s.endswith(suffix) for suffix in ['.P', '.W', '.U'])
+            not any(s.endswith(suffix) for suffix in ['.P', '.W', '.U', '.V', '.A', '.B', '.Q'])
         ]
         
         # Add the major fallbacks to ensure core market leaders are always included
-        combined_list = list(symbols.union(set(MAJOR_FALLBACK_LIST)))
+        combined_list = list(set(filtered_symbols).union(set(MAJOR_FALLBACK_LIST)))
         
         # Shuffle and take the target count
         random.shuffle(combined_list)
@@ -251,20 +251,63 @@ def get_top_200_symbols() -> list:
         print(f"Error fetching symbols via Finnhub News proxy: {e}. Using guaranteed fallback list.")
         return MAJOR_FALLBACK_LIST
 
+def fetch_fundamentals(symbol: str) -> dict:
+    """Combines all external API fetches (NewsAPI, Finnhub, GROQ) for a single symbol."""
+    
+    # 1. NewsAPI (includes 3s delay)
+    news_headlines = fetch_news_headlines(symbol)
+    
+    # 2. GROQ Sentiment (called on headlines)
+    sentiment = get_sentiment_score(symbol, news_headlines)
+    
+    # 3. Finnhub Data (includes 1.5s delay for each Finnhub call)
+    pe = get_pe_ratio(symbol)
+    sec_filing_count = get_sec_filing_count(symbol)
+    
+    # Mock Volume Surge (TODO: Replace with real calculation)
+    volume_surge_factor = round(random.uniform(1.0, 5.0), 1)
+    
+    return {
+        "pe": pe,
+        "sentiment": sentiment,
+        "volume_surge_factor": volume_surge_factor,
+        "sec_filings_count": sec_filing_count,
+    }
 
-# --------------------------- 
-# Main Orchestration
-# ---------------------------
+def calculate_score(data: dict) -> float:
+    """Proprietary scoring function based on weighted criteria."""
+    
+    pe = data.get("pe", 0)
+    pe_score = 0.0
+    if 10 < pe <= 30: pe_score = 4.0
+    elif 30 < pe <= 50: pe_score = 3.0
+    elif 50 < pe <= 70: pe_score = 1.5
+    else: pe_score = 0.5
+    
+    sentiment = data.get("sentiment", 0.5)
+    sentiment_score = sentiment * 3.0 
+    
+    volume_surge = data.get("volume_surge_factor", 1.0)
+    volume_score = min(volume_surge / 2.5, 2.0)
+    
+    filing_count = data.get("sec_filings_count", 0)
+    filing_score = min(filing_count * 0.25, 1.0)
+    
+    composite_score = pe_score + sentiment_score + volume_score + filing_score
+    return round(composite_score + random.uniform(-0.1, 0.1), 3)
+
+# ===============================================
+# B. MAIN EXECUTION FLOWS (CALLS A)
+# ===============================================
 
 def generate_top_stocks():
     """Fetches symbols, calculates scores, and returns the top 20 list."""
     start_time = time.time()
     
-    # NEW STRATEGY: Get the Top 200 relevant symbols directly from Finnhub proxy
+    # 1. Get the list of symbols to process (Top 200 proxy)
     symbols = get_top_200_symbols()
     
     if not symbols:
-        # This should only happen if the fallback list is also empty, which is unlikely.
         print("CRITICAL: Failed to get any symbols. Exiting.")
         return []
 
@@ -279,10 +322,10 @@ def generate_top_stocks():
         
         print(f"Processing symbol {i+1}/{len(symbols)}: {symbol}...")
         try:
-            # 1. Fetch data from APIs (this includes all the necessary delays)
+            # 2. Call the combined fetcher (THIS WAS THE SCOPE ERROR FIX)
             fundamentals = fetch_fundamentals(symbol)
             
-            # 2. Calculate score
+            # 3. Calculate score
             score = calculate_score(fundamentals)
             
             scored_stocks.append({
