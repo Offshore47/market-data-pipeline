@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "framework": null,
+  "cleanUrls": true,
+  "builds": [
+    {
+      "src": "package.json",
+      "use": "@vercel/static-build",
+      "config": {
+        "installCommand": "npm install",
+        "buildCommand": "echo 'Skipping React build process for single-file component' && cp index.html index.html"
+      }
+    }
+  ],
+  "routes": [
+    {
+      "src": "/.*",
+      "dest": "/index.html"
+    }
+  ]
+}
