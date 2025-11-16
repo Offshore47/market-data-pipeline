@@ -4,7 +4,7 @@ import time
 from datetime import datetime, timedelta
 import random 
 import requests 
-from firebase_admin import credentials, initialize_app, firestore
+from firebase_admin import credentials, initialize_app, firestore, exceptions
 from supabase import create_client
 
 # --------------------------- 
@@ -26,7 +26,7 @@ else:
 APP_ID = os.environ.get('APP_ID', 'default-app-id') 
 COLLECTION_PATH = f'artifacts/{APP_ID}/public/data/topStocks'
 
-# API Keys
+# Financial & LLM API Keys
 GROQ_API_KEY = os.environ.get('GROQ_API_KEY')
 NEWSAPI_KEY = os.environ.get('NEWSAPI_KEY')
 FINANCIAL_API_KEY = os.environ.get('FINANCIAL_API_KEY') # Finnhub Key
@@ -43,6 +43,7 @@ def fetch_news_headlines(symbol: str) -> str:
         print("NEWSAPI_KEY not found. Skipping news fetch.")
         return "No recent news found."
 
+    # NOTE: Using 'q={symbol} stock' for relevancy
     url = f"https://newsapi.org/v2/everything?q={symbol} stock&sortBy=publishedAt&language=en&pageSize=10&apiKey={NEWSAPI_KEY}"
     try:
         response = requests.get(url, timeout=10)
@@ -144,7 +145,7 @@ def fetch_finnhub_data(endpoint: str, symbol: str, params: dict = None) -> dict:
 def get_pe_ratio(symbol: str) -> float:
     """Fetches the latest P/E ratio."""
     data = fetch_finnhub_data("/stock/metric", symbol, {"metric": "price-to-book"}) 
-    pe_ratio = data.get('metric', {}).get('peTTM', None)
+    pe_ratio = data.get('metric', {}).get('peTTM', None) 
     if pe_ratio and isinstance(pe_ratio, (int, float)):
         print(f"Fetched P/E for {symbol}: {pe_ratio:.1f}")
         return pe_ratio
@@ -176,7 +177,7 @@ def fetch_fundamentals(symbol: str) -> dict:
     news_headlines = fetch_news_headlines(symbol)
     sentiment = get_sentiment_score(symbol, news_headlines)
     pe = get_pe_ratio(symbol)
-    sec_filings_count = get_sec_filing_count(symbol)
+    sec_filing_count = get_sec_filing_count(symbol)
     
     # Mock Volume Surge (TODO: Replace with real calculation)
     volume_surge_factor = round(random.uniform(1.0, 5.0), 1)
@@ -185,7 +186,7 @@ def fetch_fundamentals(symbol: str) -> dict:
         "pe": pe,
         "sentiment": sentiment,
         "volume_surge_factor": volume_surge_factor,
-        "sec_filings_count": sec_filings_count,
+        "sec_filings_count": sec_filing_count,
     }
 
 def calculate_score(data: dict) -> float:
@@ -276,6 +277,9 @@ def generate_top_stocks():
 
 def initialize_firebase():
     """Initializes Firebase Admin SDK using a service account JSON file."""
+    # Initialize app to None first
+    app = None
+    
     service_account_json = os.environ.get('FIREBASE_SERVICE_ACCOUNT_KEY')
     if not service_account_json:
         raise ValueError("FIREBASE_SERVICE_ACCOUNT_KEY environment variable not set.")
@@ -284,10 +288,20 @@ def initialize_firebase():
     
     try:
         cred = credentials.Certificate(cred_dict)
-        # Use a unique name for the app instance
-        initialize_app(cred, name=f"screener_app_{APP_ID}")
+        # 1. Initialize the app instance
+        app = initialize_app(cred, name=f"screener_app_{APP_ID}")
         print("Firebase Admin SDK initialized successfully.")
+        
+        # 2. Return the Firestore client associated with that instance
+        return firestore.client(app=app) 
+        
+    except exceptions.DuplicatedAppError:
+        # If the app was already initialized in a previous run, retrieve it by name
+        import firebase_admin as fa
+        app = fa.get_app(name=f"screener_app_{APP_ID}")
+        print("Firebase Admin SDK (already initialized) retrieved successfully.")
         return firestore.client(app=app)
+        
     except Exception as e:
         print(f"Error initializing Firebase: {e}")
         raise e
