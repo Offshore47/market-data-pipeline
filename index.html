@@ -54,6 +54,7 @@
 
 
         // --- INLINE SVG ICON COMPONENTS (Pure JS) ---
+        // FIX: Ensure all functions are defined using React.createElement explicitly
         const Icon = ({ name, size = 24, className }) => {
             let svgContent = '';
             let viewBox = '0 0 24 24';
@@ -351,7 +352,7 @@
                         React.createElement('div', { className: "text-sm text-gray-600 flex items-center" },
                             React.createElement('span', { className: "text-green-500 mr-1" }, "●"),
                             "Logged in as: ",
-                            React.createElement('span', { className: "font-mono text-xs ml-1 text-gray-800 break-all" }, userId)
+                            React.createElement('span', { className: "font-mono text-xs ml-1 text-gray-800 break-all" }, "SIMULATED_USER_123")
                         )
                     ),
 
