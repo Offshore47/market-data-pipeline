@@ -21,40 +21,17 @@
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-moment@1.0.1/dist/chartjs-adapter-moment.min.js"></script>
     
+    <!-- FINAL FIX: Use compatible Firebase SDK V8 -->
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-firestore.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-auth.js"></script>
+    
 </head>
 <body>
     <div id="root"></div>
     
     <!-- Consolidated React Application Code (Pure JS/createElement syntax) -->
     <script>
-        // --- Firebase Load Helper ---
-        // This function forces the browser to load the Firebase SDKs and returns a Promise.
-        function loadFirebaseSdk() {
-            return new Promise((resolve, reject) => {
-                const firebaseAppUrl = "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-                const firebaseUrl = "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
-                const authUrl = "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-
-                let loadCount = 0;
-                const scriptsToLoad = [firebaseAppUrl, firebaseUrl, authUrl];
-
-                const loadScript = (url) => {
-                    const script = document.createElement('script');
-                    script.src = url;
-                    script.onload = () => {
-                        loadCount++;
-                        if (loadCount === scriptsToLoad.length) {
-                            resolve();
-                        }
-                    };
-                    script.onerror = reject;
-                    document.head.appendChild(script);
-                };
-
-                scriptsToLoad.forEach(loadScript);
-            });
-        }
-        
         // Global variables required by the component (as established in the pipeline)
         window.__app_id = 'default-app-id';
         window.__firebase_config = JSON.stringify({}); 
@@ -76,8 +53,9 @@
         const FINANCIAL_API_BASE_URL = "https://www.alphavantage.co/query"; 
 
 
-        // --- Helper to get modern Firebase functions once the SDK is loaded ---
+        // --- Helper to get modern Firebase functions (V8 compatible) ---
         const getFirebaseModules = () => {
+            // Since we load V8, we can use the global firebase object directly.
             if (!window.firebase) {
                 console.error("Firebase object not defined. Check CDN loading.");
                 return {
@@ -88,7 +66,7 @@
                 };
             }
             
-            // Accessing global objects defined by the CDN
+            // Accessing global objects defined by the CDN (V8 syntax)
             return {
                 initializeApp: window.firebase.initializeApp,
                 getAuth: window.firebase.auth, 
@@ -558,7 +536,5 @@
             }
         });
     </script>
-</body>
-</html>```
 </body>
 </html>
