@@ -1,1 +1,59 @@
+name: Run Daily Stock Screener and Update Firestore
 
+on:
+  # This schedule ensures the workflow runs daily at 04:00 UTC, outside of typical market hours, 
+  # allowing time for news data and filings to be processed.
+  schedule:
+    - cron: "0 4 * * *" 
+  # Allows you to manually trigger the workflow from the 'Actions' tab on GitHub for testing.
+  workflow_dispatch: 
+
+jobs:
+  run-screener:
+    runs-on: ubuntu-latest
+    
+    # Define environment variables using GitHub Secrets and Variables
+    env:
+      # --- Supabase Secrets (For reading the master symbol list) ---
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+      
+      # --- Firestore Secrets/Variables (For publishing the Top 20 results) ---
+      APP_ID: ${{ vars.APP_ID }} 
+      FIREBASE_SERVICE_ACCOUNT_KEY: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_KEY }}
+      
+      # --- Financial & LLM API Keys (For scoring logic) ---
+      FINANCIAL_API_KEY: ${{ secrets.FINANCIAL_API_KEY }} # Your Finnhub key
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }} 
+      NEWSAPI_KEY: ${{ secrets.NEWSAPI_KEY }} 
+
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }} # For notifications
+
+    steps:
+      - name: Checkout repository code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: 'pip'
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # Install the necessary libraries for Supabase, Firestore, requests, and data handling
+          pip install firebase-admin requests pandas supabase
+
+      - name: Execute Stock Screener and Firestore Write
+        # This calls your Python script to run the scoring pipeline
+        run: python scripts/run_screener.py
+      
+      - name: Notify Slack on failure
+        # This step only runs if any previous step in this job fails
+        if: failure()
+        run: |
+          if [ -n "${{ env.SLACK_WEBHOOK_URL }}" ]; then
+            PAYLOAD="{\"text\":\"🚨 Stock Screener Failure: The daily screening workflow failed in ${{ github.repository }}. Check Actions for logs.\"}"
+            curl -s -X POST -H 'Content-type: application/json' --data "${PAYLOAD}" "${{ env.SLACK_WEBHOOK_URL }}" || true
+          fi
