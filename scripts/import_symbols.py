@@ -1,12 +1,13 @@
 # scripts/import_symbols.py
 """
-Final importer:
-- Wikipedia primary for indices (S&P 500/400/600 -> S&P1500, Russell 1000/2000/3000, DJIA).
-- Russell fallback: try known GitHub mirrors if Wikipedia returns too few rows.
-- Best-effort NASDAQTrader attempt (not required).
-- Dedupe, ETF filter, upsert into Supabase `symbols`.
-- Write run row into `import_stats`.
-- Slack summary on success; Slack + SMS on failure (SMS only if MAILGUN or SMTP configured).
+Importer with OTC support (symbols-only).
+- Indices from Wikipedia (S&P1500, Russell groups, DJIA)
+- Russell fallback mirrors
+- OTC symbol sources (multiple free mirrors + HTML fallback)
+- Best-effort NASDAQ/otherlisted attempt (may be down)
+- Deduplicate, conservative ETF filtering, upsert to Supabase 'symbols'
+- Write run row to 'import_stats'
+- Slack summary on success; Slack+SMS on failure (SMS only if Mailgun/SMTP configured)
 """
 
 import io
@@ -55,7 +56,7 @@ REQUEST_HEADERS = {
 }
 
 # ---------------------------
-# Sources
+# Index and exchange sources
 # ---------------------------
 WIKI_SP500 = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
 WIKI_SP400 = "https://en.wikipedia.org/wiki/List_of_S%26P_400_companies"
@@ -65,7 +66,7 @@ WIKI_R2000 = "https://en.wikipedia.org/wiki/Russell_2000"
 WIKI_R3000 = "https://en.wikipedia.org/wiki/Russell_3000_Index"
 WIKI_DJIA = "https://en.wikipedia.org/wiki/Dow_Jones_Industrial_Average"
 
-# Russell fallback mirrors (stable public mirrors)
+# Russell fallback mirrors (public CSVs)
 RUSSELL1000_MIRRORS = [
     "https://raw.githubusercontent.com/StonksLexicon/stock-lists/main/russell1000.csv",
     "https://raw.githubusercontent.com/rajchandra/market-data/master/russell1000.csv"
@@ -79,12 +80,27 @@ RUSSELL3000_MIRRORS = [
     "https://raw.githubusercontent.com/rajchandra/market-data/master/russell3000.csv"
 ]
 
-# Best-effort NasdaqTrader (may be blocked/time out)
+# Best-effort exchange files
 NASDAQTXT_HTTP = "http://ftp.nasdaqtrader.com/dynamic/SymbolDirectory/nasdaqlisted.txt"
 OTHERLISTED_HTTP = "http://ftp.nasdaqtrader.com/dynamic/SymbolDirectory/otherlisted.txt"
 
 # ---------------------------
-# HTTP helper
+# OTC sources (symbols-only) - multiple fallbacks
+# - these are free public mirrors; individual mirrors may 404 or be stale, script tolerates that
+# ---------------------------
+OTC_SOURCES_CSV = [
+    "https://raw.githubusercontent.com/datasets/otc-markets/master/otc_symbols.csv",
+    "https://raw.githubusercontent.com/piekosd/us-stock-market-symbols/master/otc.csv",
+    "https://raw.githubusercontent.com/codebox/otc-markets-symbols/master/otc_symbols.csv",
+]
+
+# Some OTC pages serve tables (HTML) instead of CSV; we can parse via pandas as a fallback
+OTC_SOURCES_HTML = [
+    "https://www.otcmarkets.com/stock-screener",  # page has table; scraping is best-effort
+]
+
+# ---------------------------
+# HTTP helper with retries
 # ---------------------------
 def safe_get_text(url: str, retries: int = RETRY_ATTEMPTS, delay: int = RETRY_DELAY) -> Optional[str]:
     last_exc = None
@@ -133,12 +149,64 @@ def parse_csv_symbols(text: str, candidate_cols=("Symbol","symbol","Ticker","tic
                     out.append(row[c].strip().upper())
                     break
     except Exception:
-        # fallback: per-line
+        # fallback: per-line first token
         for line in text.splitlines():
             s = line.strip().split(",")[0].strip().upper()
             if s:
                 out.append(s)
     return out
+
+def parse_html_table_symbols(html: str) -> List[str]:
+    # Try pandas.read_html wrapped in StringIO
+    try:
+        tables = pd.read_html(io.StringIO(html))
+        for df in tables:
+            cols = [str(c).lower() for c in df.columns]
+            for candidate in ("symbol","ticker","ticker symbol","ticker(s)","code"):
+                if any(candidate in c for c in cols):
+                    # choose best matching column
+                    for c in df.columns:
+                        if candidate in str(c).lower():
+                            vals = df[c].astype(str).tolist()
+                            syms = [v.split()[0].split('[')[0].strip().upper() for v in vals if v and str(v).strip() != ""]
+                            return [s for s in syms if s]
+        # fallback: try first column
+        if tables:
+            first = tables[0]
+            vals = first.iloc[:,0].astype(str).tolist()
+            syms = [v.split()[0].split('[')[0].strip().upper() for v in vals if v and str(v).strip() != ""]
+            return [s for s in syms if s]
+    except Exception as e:
+        print("parse_html_table_symbols failed:", e)
+    return []
+
+# ---------------------------
+# OTC fetcher using the above sources
+# ---------------------------
+def fetch_otc_symbols() -> List[str]:
+    symbols = []
+    # try CSV mirrors first
+    for url in OTC_SOURCES_CSV:
+        txt = safe_get_text(url)
+        if not txt:
+            continue
+        parsed = parse_csv_symbols(txt, candidate_cols=("Symbol","symbol","Ticker","ticker","code"))
+        if parsed:
+            print(f"OTC: fetched {len(parsed)} symbols from {url}")
+            symbols += parsed
+            # don't break — aggregate multiple mirrors to increase coverage
+    # if still empty, try HTML sources
+    if not symbols:
+        for url in OTC_SOURCES_HTML:
+            txt = safe_get_text(url)
+            if not txt:
+                continue
+            parsed = parse_html_table_symbols(txt)
+            if parsed:
+                print(f"OTC: fetched {len(parsed)} symbols from HTML {url}")
+                symbols += parsed
+    # dedupe
+    return list(dict.fromkeys(symbols))
 
 # ---------------------------
 # Wikipedia fetch / parser using pandas.read_html with StringIO
@@ -148,19 +216,17 @@ def fetch_symbols_from_wikipedia(url: str) -> List[str]:
     if not html:
         return []
     try:
-        # wrap literal html text in StringIO to avoid pandas FutureWarning
         tables = pd.read_html(io.StringIO(html))
         for df in tables:
             cols = [str(c).lower() for c in df.columns]
-            for candidate in ("symbol","ticker","ticker symbol","ticker(s)","ticker(s)"):
+            for candidate in ("symbol","ticker","ticker symbol","ticker(s)","code"):
                 if any(candidate in c for c in cols):
-                    # find the column
+                    # pick matching column
                     for c in df.columns:
                         if candidate in str(c).lower():
                             try:
                                 vals = df[c].astype(str).tolist()
                                 syms = [v.split()[0].split('[')[0].strip().upper() for v in vals if v and str(v).strip() != ""]
-                                # filter out header-like values
                                 syms = [s for s in syms if s and len(s) <= 12]
                                 if syms:
                                     return syms
@@ -172,7 +238,7 @@ def fetch_symbols_from_wikipedia(url: str) -> List[str]:
         syms = [v.split()[0].split('[')[0].strip().upper() for v in vals if v and str(v).strip() != ""]
         return [s for s in syms if s and len(s) <= 12]
     except Exception as e:
-        print(f"pandas.read_html parsing failed for {url}: {e}")
+        print(f"pandas.read_html failed for {url}: {e}")
         return []
 
 # ---------------------------
@@ -180,16 +246,15 @@ def fetch_symbols_from_wikipedia(url: str) -> List[str]:
 # ---------------------------
 def fetch_russell_with_fallback(wiki_url: str, mirrors: List[str], expected_min: int = 1000) -> List[str]:
     syms = fetch_symbols_from_wikipedia(wiki_url)
-    if syms and len(syms) >= min(10, expected_min//10):  # if wiki yields reasonable chunk, accept it
+    if syms and len(syms) >= min(10, expected_min // 10):
         return syms
-    # else try mirrors
     for m in mirrors:
         txt = safe_get_text(m)
         if txt:
             parsed = parse_csv_symbols(txt, candidate_cols=("Symbol","symbol","Ticker","ticker"))
             if parsed:
+                print(f"Russell fallback: fetched {len(parsed)} from {m}")
                 return parsed
-    # final: return whatever wiki had (even small)
     return syms
 
 # ---------------------------
@@ -200,7 +265,7 @@ def upsert_symbols_batch(symbols: List[str]):
     for sym in symbols:
         if not sym or len(sym) > 12:
             continue
-        batch.append({"symbol": sym, "is_valid": None, "source": "wikipedia-import"})
+        batch.append({"symbol": sym, "is_valid": None, "source": "hybrid-import"})
         if len(batch) >= BATCH_SIZE:
             supabase.table("symbols").upsert(batch).execute()
             batch = []
@@ -291,7 +356,7 @@ def main():
     failed_sources = []
 
     try:
-        # S&P 500/400/600 (Wikipedia primary)
+        # 1) indices from Wikipedia
         print("Fetching S&P 500...")
         s500 = fetch_symbols_from_wikipedia(WIKI_SP500)
         print(f"S&P500: {len(s500)}")
@@ -306,7 +371,7 @@ def main():
 
         sp1500 = list(set(s500 + s400 + s600))
 
-        # Russell (wiki first, then mirrors)
+        # Russell groups
         print("Fetching Russell 1000...")
         r1000 = fetch_russell_with_fallback(WIKI_R1000, RUSSELL1000_MIRRORS, expected_min=900)
         print(f"Russell1000: {len(r1000)}")
@@ -324,7 +389,14 @@ def main():
         djia = fetch_symbols_from_wikipedia(WIKI_DJIA)
         print(f"DJIA: {len(djia)}")
 
-        # Best-effort exchanges (optional)
+        # 2) OTC symbols (symbols-only)
+        print("Fetching OTC symbols from mirrors (CSV/HTML fallbacks)...")
+        otc = fetch_otc_symbols()
+        print(f"OTC symbols fetched: {len(otc)}")
+        if not otc:
+            failed_sources.append("otc")
+
+        # 3) Best-effort exchanges (optional)
         print("Attempting NASDAQ/otherlisted (best-effort)...")
         ex = []
         t = safe_get_text(NASDAQTXT_HTTP)
@@ -334,8 +406,8 @@ def main():
         if t2:
             ex += parse_nasdaq_txt(t2)
 
-        # Merge everything
-        collected += sp1500 + r1000 + r2000 + r3000 + djia + ex
+        # 4) Merge everything
+        collected += sp1500 + r1000 + r2000 + r3000 + djia + otc + ex
 
         raw_count = len(collected)
 
