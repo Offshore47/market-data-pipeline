@@ -1,8 +1,7 @@
 name: Run Daily Stock Screener and Update Firestore
 
 on:
-  # This schedule ensures the workflow runs daily at 04:00 UTC, outside of typical market hours, 
-  # allowing time for news data and filings to be processed.
+  # This schedule ensures the workflow runs daily at 04:00 UTC, outside of typical market hours.
   schedule:
     - cron: "0 4 * * *" 
   # Allows you to manually trigger the workflow from the 'Actions' tab on GitHub for testing.
@@ -37,7 +36,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: 'pip'
+          # *** REMOVED 'cache: 'pip'' TO AVOID LOOKING FOR requirements.txt ***
 
       - name: Install Python dependencies
         run: |
