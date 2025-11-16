@@ -43,7 +43,6 @@ def fetch_news_headlines(symbol: str) -> str:
         print("NEWSAPI_KEY not found. Skipping news fetch.")
         return "No recent news found."
 
-    # NOTE: Using 'q={symbol} stock' for relevancy
     url = f"https://newsapi.org/v2/everything?q={symbol} stock&sortBy=publishedAt&language=en&pageSize=10&apiKey={NEWSAPI_KEY}"
     try:
         response = requests.get(url, timeout=10)
@@ -65,6 +64,10 @@ def get_sentiment_score(symbol: str, news_text: str) -> float:
     if not GROQ_API_KEY:
         print("GROQ_API_KEY not found. Using mock sentiment.")
         return random.uniform(0.4, 0.95)
+    
+    # Skip LLM call if the news text is too short or indicates failure
+    if len(news_text) < 50 or "No recent news found" in news_text or "News fetch failed" in news_text:
+        return random.uniform(0.45, 0.55)
 
     system_prompt = (
         "You are a concise financial sentiment analyzer. Your task is to analyze the provided text, "
@@ -100,7 +103,8 @@ def get_sentiment_score(symbol: str, news_text: str) -> float:
             response.raise_for_status()
             
             groq_result = response.json()
-            json_str = groq_result['candidates'][0]['content']['parts'][0]['text']
+            # Corrected path for response content for Groq's structure
+            json_str = groq_result['choices'][0]['message']['content'] 
             parsed_json = json.loads(json_str)
             
             score = float(parsed_json.get('sentiment_score', 0.5))
@@ -134,7 +138,13 @@ def fetch_finnhub_data(endpoint: str, symbol: str, params: dict = None) -> dict:
         try:
             response = requests.get(url, params=full_params, timeout=15)
             response.raise_for_status()
-            return response.json()
+            
+            data = response.json()
+            # FIX: If API returns an empty list (no data), treat it as an empty dictionary
+            if isinstance(data, list) and not data:
+                return {}
+            return data
+            
         except requests.exceptions.RequestException as e:
             if attempt == MAX_RETRIES - 1:
                 print(f"Finnhub API final attempt failed ({endpoint}) for {symbol}: {e}")
@@ -145,6 +155,11 @@ def fetch_finnhub_data(endpoint: str, symbol: str, params: dict = None) -> dict:
 def get_pe_ratio(symbol: str) -> float:
     """Fetches the latest P/E ratio."""
     data = fetch_finnhub_data("/stock/metric", symbol, {"metric": "price-to-book"}) 
+    
+    # FIX: Ensure data is a dictionary before calling .get()
+    if not isinstance(data, dict):
+        return round(random.uniform(15.0, 80.0), 1)
+
     pe_ratio = data.get('metric', {}).get('peTTM', None) 
     if pe_ratio and isinstance(pe_ratio, (int, float)):
         print(f"Fetched P/E for {symbol}: {pe_ratio:.1f}")
@@ -163,6 +178,11 @@ def get_sec_filing_count(symbol: str) -> int:
     }
     
     data = fetch_finnhub_data("/stock/filings", symbol, params)
+    
+    # FIX: Ensure data is a dictionary before calling .get()
+    if not isinstance(data, dict):
+        return 0
+        
     filings = data.get('filings', [])
     count = len([f for f in filings if f.get('form', '').upper() in ['10-K', '10-Q']])
     print(f"Found {count} recent SEC filings for {symbol}.")
@@ -218,7 +238,7 @@ def fetch_master_symbols_from_supabase() -> list:
     if SUPABASE_CLIENT:
         try:
             response = SUPABASE_CLIENT.table("symbols").select("symbol").execute()
-            symbols = [item['symbol'] for item in response.data if item.get('symbol')]
+            symbols = [item['symbol'] for item in response.data if isinstance(item, dict) and item.get('symbol')]
             print(f"Successfully fetched {len(symbols)} symbols from Supabase.")
             return symbols
         except Exception as e:
@@ -226,7 +246,6 @@ def fetch_master_symbols_from_supabase() -> list:
             return []
     
     # Fallback if Supabase client could not be initialized (e.g., missing secrets)
-    # This ensures the script can run for testing even without a fully populated Supabase DB
     return ["MSFT", "AAPL", "GOOGL", "NVDA", "TSLA", "AMZN", "JPM", "V", "WMT", "KO", "BAC"]
 
 def generate_top_stocks():
@@ -241,7 +260,10 @@ def generate_top_stocks():
 
     scored_stocks = []
     
-    for i, symbol in enumerate(symbols):
+    for i, raw_symbol in enumerate(symbols):
+        # Ensure symbol is a string before proceeding
+        symbol = str(raw_symbol)
+        
         print(f"Processing symbol {i+1}/{len(symbols)}: {symbol}...")
         try:
             # 1. Fetch data from APIs
@@ -264,6 +286,7 @@ def generate_top_stocks():
             time.sleep(0.5) 
             
         except Exception as e:
+            # The error is caught and reported here, allowing the loop to continue
             print(f"CRITICAL ERROR processing {symbol}: {e}")
             continue
 
