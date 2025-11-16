@@ -29,6 +29,7 @@
     <script>
         
         // --- SIMULATED DATA (Based on your successful Firestore output) ---
+        // NOTE: This array is what your app will display.
         const SIMULATED_STOCKS = [
             { id: 'JPM', symbol: 'JPM', score: 7.567, pe: 14.2, sentiment: 0.85, volumeSurge: 1.5, secFilingsCount: 1 },
             { id: 'JNJ', symbol: 'JNJ', score: 7.210, pe: 18.8, sentiment: 0.80, volumeSurge: 1.3, secFilingsCount: 0 },
@@ -49,8 +50,7 @@
 
 
         // --- Configuration ---
-        // FINAL FIX: Read environment variable injected by Vercel for the front-end key.
-        const CHART_API_KEY = process.env.CHART_API_KEY || "PLACEHOLDER_NOT_SET";
+        const CHART_API_KEY = "YOUR_CHART_API_KEY_HERE"; 
         const FINANCIAL_API_BASE_URL = "https://www.alphavantage.co/query"; 
 
 
@@ -73,10 +73,10 @@
                     svgContent = '<line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line>';
                     break;
                 default: 
-                    return createElement('span', { className: className }, '?');
+                    return React.createElement('span', { className: className }, '?');
             }
 
-            return createElement('svg', {
+            return React.createElement('svg', {
                 className: className,
                 width: size,
                 height: size,
@@ -90,18 +90,20 @@
             });
         };
 
-        const LogInIcon = (props) => createElement(Icon, { name: 'log-in', ...props });
-        const TrendingUpIcon = (props) => createElement(Icon, { name: 'trending-up', ...props });
-        const DollarSignIcon = (props) => createElement(Icon, { name: 'dollar-sign', ...props });
-        const XIcon = (props) => createElement(Icon, { name: 'x', ...props });
+        const LogInIcon = (props) => React.createElement(Icon, { name: 'log-in', ...props });
+        const TrendingUpIcon = (props) => React.createElement(Icon, { name: 'trending-up', ...props });
+        const DollarSignIcon = (props) => React.createElement(Icon, { name: 'dollar-sign', ...props });
+        const XIcon = (props) => React.createElement(Icon, { name: 'x', ...props });
 
 
         // --- APP COMPONENT ---
 
         const App = () => {
+            const { useState, useEffect, useRef, useCallback } = React;
+            
             const [userId, setUserId] = useState("SIMULATED_USER_123");
-            const [topStocks, setTopStocks] = useState(SIMULATED_STOCKS); 
-            const [loading, setLoading] = useState(false); 
+            const [topStocks, setTopStocks] = useState(SIMULATED_STOCKS); // USE SIMULATED DATA
+            const [loading, setLoading] = useState(false); // SET TO FALSE
             const [error, setError] = useState(null);
             const [chartData, setChartData] = useState(null);
             const [modalPos, setModalPos] = useState({ x: 50, y: 50 });
@@ -110,8 +112,8 @@
 
             // 3. Data Fetching Function for Charting (Exponential Backoff included)
             const fetchStockData = useCallback(async (symbol) => {
-                if (!CHART_API_KEY || CHART_API_KEY === "PLACEHOLDER_NOT_SET") {
-                    setError("Please set a valid CHART_API_KEY in Vercel environment variables to fetch chart data.");
+                if (!CHART_API_KEY || CHART_API_KEY === "YOUR_CHART_API_KEY_HERE") {
+                    setError("Please set a valid CHART_API_KEY to fetch chart data.");
                     return;
                 }
 
@@ -147,11 +149,11 @@
                         return; 
                         
                     } catch (e) {
-                        console.warn(`Attempt {attempt + 1} failed for {symbol}: {e.message}`);
+                        console.warn(`Attempt ${attempt + 1} failed for ${symbol}: ${e.message}`);
                         setChartData({ symbol, data: [], loading: false, error: e.message });
                         attempt++;
                         if (attempt >= MAX_RETRIES) {
-                            setError(`Failed to fetch historical data for {symbol} after {MAX_RETRIES} attempts. Error: {e.message}`);
+                            setError(`Failed to fetch historical data for ${symbol} after ${MAX_RETRIES} attempts. Error: ${e.message}`);
                             break;
                         }
                         const delay = Math.pow(2, attempt) * 1000 + Math.random() * 1000;
