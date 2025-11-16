@@ -5,8 +5,6 @@ from datetime import datetime, timedelta
 import random 
 import requests 
 from firebase_admin import credentials, initialize_app, firestore, exceptions
-# NOTE: Supabase client is no longer needed for symbol retrieval, but we keep the import structure just in case.
-# If you remove the 'supabase' dependency in your YAML, you can remove this line too.
 from supabase import create_client 
 
 # --------------------------- 
@@ -15,7 +13,7 @@ from supabase import create_client
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_ANON_KEY")
 
-# --- Initialize Supabase Client (Kept for logging/future expansion, but not used for symbol fetch) ---
+# --- Initialize Supabase Client (Kept for logging/future expansion) ---
 if not SUPABASE_URL or not SUPABASE_KEY:
     SUPABASE_CLIENT = None
 else:
@@ -33,9 +31,7 @@ FINANCIAL_API_KEY = os.environ.get('FINANCIAL_API_KEY') # Finnhub Key
 FINNHUB_BASE_URL = "https://finnhub.io/api/v1"
 
 # --- RATE LIMIT CONFIGURATION & TARGETS ---
-# CRITICAL: We target 200 symbols total for scoring (800 API calls) to stay within the 1000/day limit.
 TARGET_SYMBOL_COUNT = 200 
-# Total time per symbol is approx 4.5 seconds (3s News + 1.5s Finnhub)
 # --------------------------------
 
 # --------------------------- 
@@ -175,7 +171,6 @@ def fetch_finnhub_data(endpoint: str, symbol: str, params: dict = None) -> dict:
 
 def get_pe_ratio(symbol: str) -> float:
     """Fetches the latest P/E ratio."""
-    # Note: Finnhub provides the basic metrics endpoint for free.
     data = fetch_finnhub_data("/stock/metric", symbol, {"metric": "price-to-book"}) 
     
     if not isinstance(data, dict):
@@ -210,19 +205,16 @@ def get_sec_filing_count(symbol: str) -> int:
 
 def get_top_200_symbols() -> list:
     """
-    Fetches a proxy list of up to 200 highly relevant symbols 
-    using Finnhub's Free Market News endpoint (as a proxy for activity/market cap).
-    
-    Returns a list of unique ticker symbols.
+    Attempts to fetch a list of highly relevant symbols using Finnhub News proxy.
+    If the API call fails or returns empty, returns a hardcoded list of major tickers.
     """
+    MAJOR_FALLBACK_LIST = ["MSFT", "AAPL", "GOOGL", "NVDA", "TSLA", "AMZN", "JPM", "V", "WMT", "KO", "BAC", "HD", "UNH", "PG", "JNJ", "MA", "V", "BABA", "TCEHY", "ADBE"]
+    
     if not FINANCIAL_API_KEY:
-        print("Finnhub API key missing. Using hardcoded symbols for testing.")
-        return ["MSFT", "AAPL", "GOOGL", "NVDA", "TSLA", "AMZN", "JPM", "V", "WMT", "KO", "BAC"]
+        print("Finnhub API key missing. Using guaranteed fallback symbols.")
+        return MAJOR_FALLBACK_LIST
 
     url = f"{FINNHUB_BASE_URL}/news?category=general&minId=0&token={FINANCIAL_API_KEY}"
-    
-    # NOTE: The news endpoint returns symbols mentioned in articles, 
-    # making it a reliable proxy for active stocks.
     
     try:
         response = requests.get(url, timeout=15)
@@ -231,30 +223,33 @@ def get_top_200_symbols() -> list:
         
         symbols = set()
         for article in articles:
-            # Finnhub's article structure often includes a 'related' field with symbols
             related = article.get('related', '')
             if related:
                 symbols.update([s.strip() for s in related.split(',') if s.strip()])
                 
-        # Filter out ETFs and bad symbols (using the heuristic from the importer)
-        ETF_KEYWORDS = ["ETF", "ETN", "FUND", "TRUST", "INDEX", "EXCHANGE TRADED"]
+        # Filter out obvious non-stock tickers
+        ETF_KEYWORDS = ["ETF", "ETN", "FUND", "INDEX"]
         filtered_symbols = [
             s for s in symbols 
             if s and len(s) <= 12 and 
+            s not in MAJOR_FALLBACK_LIST and # Avoid duplicate processing if they are in both lists
             not any(tok in s for tok in ETF_KEYWORDS) and
-            not any(s.endswith(suffix) for suffix in ['.P', '.W', '.U', '.V'])
+            not any(s.endswith(suffix) for suffix in ['.P', '.W', '.U'])
         ]
         
-        # Shuffle and take the target count
-        random.shuffle(filtered_symbols)
-        final_list = filtered_symbols[:TARGET_SYMBOL_COUNT]
+        # Add the major fallbacks to ensure core market leaders are always included
+        combined_list = list(symbols.union(set(MAJOR_FALLBACK_LIST)))
         
-        print(f"Successfully compiled {len(final_list)} symbols using Finnhub News proxy.")
+        # Shuffle and take the target count
+        random.shuffle(combined_list)
+        final_list = combined_list[:TARGET_SYMBOL_COUNT]
+        
+        print(f"Successfully compiled {len(final_list)} symbols using Finnhub News proxy + Fallback.")
         return final_list
         
     except requests.exceptions.RequestException as e:
-        print(f"Error fetching symbols via Finnhub News proxy: {e}. Falling back to default list.")
-        return ["MSFT", "AAPL", "GOOGL", "NVDA", "TSLA", "AMZN", "JPM", "V", "WMT", "KO", "BAC"]
+        print(f"Error fetching symbols via Finnhub News proxy: {e}. Using guaranteed fallback list.")
+        return MAJOR_FALLBACK_LIST
 
 
 # --------------------------- 
@@ -269,6 +264,7 @@ def generate_top_stocks():
     symbols = get_top_200_symbols()
     
     if not symbols:
+        # This should only happen if the fallback list is also empty, which is unlikely.
         print("CRITICAL: Failed to get any symbols. Exiting.")
         return []
 
