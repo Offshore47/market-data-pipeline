@@ -5,7 +5,6 @@ from datetime import datetime, timedelta
 import random 
 import requests 
 from firebase_admin import credentials, initialize_app, firestore
-from google.cloud.firestore_v1.base_collection import BaseCollection
 from supabase import create_client
 
 # --------------------------- 
@@ -14,20 +13,20 @@ from supabase import create_client
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_ANON_KEY")
 
+# --- Initialize Supabase Client ---
 if not SUPABASE_URL or not SUPABASE_KEY:
     print("WARNING: Supabase configuration missing. Falling back to hardcoded symbols.")
     SUPABASE_CLIENT = None
 else:
-    # Initialize Supabase client
     SUPABASE_CLIENT = create_client(SUPABASE_URL, SUPABASE_KEY)
     print("Supabase client initialized.")
 
 
-# --- Configuration (Must match the React app expectations) ---
+# --- Global Configuration (Matches React App) ---
 APP_ID = os.environ.get('APP_ID', 'default-app-id') 
 COLLECTION_PATH = f'artifacts/{APP_ID}/public/data/topStocks'
 
-# Financial & LLM API Keys
+# API Keys
 GROQ_API_KEY = os.environ.get('GROQ_API_KEY')
 NEWSAPI_KEY = os.environ.get('NEWSAPI_KEY')
 FINANCIAL_API_KEY = os.environ.get('FINANCIAL_API_KEY') # Finnhub Key
@@ -44,7 +43,6 @@ def fetch_news_headlines(symbol: str) -> str:
         print("NEWSAPI_KEY not found. Skipping news fetch.")
         return "No recent news found."
 
-    # NOTE: Using 'q={symbol} stock' for relevancy
     url = f"https://newsapi.org/v2/everything?q={symbol} stock&sortBy=publishedAt&language=en&pageSize=10&apiKey={NEWSAPI_KEY}"
     try:
         response = requests.get(url, timeout=10)
@@ -55,7 +53,6 @@ def fetch_news_headlines(symbol: str) -> str:
         if not headlines:
             return "No recent news found."
             
-        # Join headlines into a single string for the LLM prompt
         return "\n".join(headlines)
 
     except requests.exceptions.RequestException as e:
@@ -86,10 +83,9 @@ def get_sentiment_score(symbol: str, news_text: str) -> float:
                 "properties": { "sentiment_score": { "type": "NUMBER", "description": "Sentiment score between 0.0 and 1.0." } }
             }
         },
-        "model": "gemma2-9b-it" # Fast GROQ model
+        "model": "gemma2-9b-it" 
     }
     
-    # Implementing request with exponential backoff
     MAX_RETRIES = 3
     for attempt in range(MAX_RETRIES):
         try:
@@ -103,24 +99,22 @@ def get_sentiment_score(symbol: str, news_text: str) -> float:
             response.raise_for_status()
             
             groq_result = response.json()
-            # Extract JSON string from response
             json_str = groq_result['candidates'][0]['content']['parts'][0]['text']
             parsed_json = json.loads(json_str)
             
             score = float(parsed_json.get('sentiment_score', 0.5))
-            return max(0.0, min(1.0, score)) # Ensure bounds 0.0 to 1.0
+            return max(0.0, min(1.0, score)) 
             
         except (requests.exceptions.RequestException, json.JSONDecodeError, KeyError) as e:
-            # Silence error logging for retries, only print final failure
             if attempt == MAX_RETRIES - 1:
                 print(f"GROQ API final attempt failed for {symbol}: {e}")
             else:
-                time.sleep(2 ** attempt) # Exponential backoff
+                time.sleep(2 ** attempt) 
     
-    return random.uniform(0.4, 0.6) # Fallback to neutral if API fails
+    return random.uniform(0.4, 0.6) 
 
 # --------------------------- 
-# Finnhub API Integration (REAL P/E and SEC Filings)
+# Finnhub API Integration (P/E and SEC Filings)
 # ---------------------------
 def fetch_finnhub_data(endpoint: str, symbol: str, params: dict = None) -> dict:
     """Generic helper for Finnhub API calls with retry."""
@@ -130,7 +124,6 @@ def fetch_finnhub_data(endpoint: str, symbol: str, params: dict = None) -> dict:
 
     url = f"{FINNHUB_BASE_URL}{endpoint}"
     
-    # Add symbol and API key to parameters
     full_params = {"symbol": symbol, "token": FINANCIAL_API_KEY}
     if params:
         full_params.update(params)
@@ -149,61 +142,43 @@ def fetch_finnhub_data(endpoint: str, symbol: str, params: dict = None) -> dict:
     return {}
 
 def get_pe_ratio(symbol: str) -> float:
-    """Fetches the latest P/E ratio using Finnhub's Basic Financials endpoint."""
-    # Requesting Price-to-Book metric group, often includes P/E for free tier
+    """Fetches the latest P/E ratio."""
     data = fetch_finnhub_data("/stock/metric", symbol, {"metric": "price-to-book"}) 
-    
-    pe_ratio = data.get('metric', {}).get('peTTM', None) # peTTM is Trailing Twelve Months P/E
-
+    pe_ratio = data.get('metric', {}).get('peTTM', None)
     if pe_ratio and isinstance(pe_ratio, (int, float)):
         print(f"Fetched P/E for {symbol}: {pe_ratio:.1f}")
         return pe_ratio
-        
-    # Fallback to mock data if API fails or returns None/Error
     return round(random.uniform(15.0, 80.0), 1)
 
 def get_sec_filing_count(symbol: str) -> int:
-    """Counts recent 10-K and 10-Q filings (last 90 days) using Finnhub."""
-    
+    """Counts recent 10-K and 10-Q filings (last 90 days)."""
     end_date = datetime.now().date()
     start_date = end_date - timedelta(days=90)
     
     params = {
         "from": start_date.isoformat(),
         "to": end_date.isoformat(),
-        "type": "10-K,10-Q" # Comma-separated list of filing types
+        "type": "10-K,10-Q" 
     }
     
     data = fetch_finnhub_data("/stock/filings", symbol, params)
-    
     filings = data.get('filings', [])
-    
-    # Count the number of relevant filings found
     count = len([f for f in filings if f.get('form', '').upper() in ['10-K', '10-Q']])
-
     print(f"Found {count} recent SEC filings for {symbol}.")
     return count
 
 # --------------------------- 
-# Core Screener Function
+# Core Screener Logic
 # ---------------------------
 def fetch_fundamentals(symbol: str) -> dict:
-    """
-    Fetches core fundamentals and initiates sentiment analysis using real APIs.
-    """
+    """Fetches core metrics for scoring."""
     
-    # 1. Real-time Sentiment Analysis (GROQ + NEWSAPI)
     news_headlines = fetch_news_headlines(symbol)
     sentiment = get_sentiment_score(symbol, news_headlines)
-    
-    # 2. P/E Ratio (FINNHUB)
     pe = get_pe_ratio(symbol)
-    
-    # 3. SEC Filings Count (FINNHUB)
     sec_filings_count = get_sec_filing_count(symbol)
     
-    # 4. Mock Volume Surge (Volume Surge is typically a custom calculation)
-    # USER TODO: Implement real volume surge calculation using Finnhub historical data.
+    # Mock Volume Surge (TODO: Replace with real calculation)
     volume_surge_factor = round(random.uniform(1.0, 5.0), 1)
     
     return {
@@ -216,7 +191,6 @@ def fetch_fundamentals(symbol: str) -> dict:
 def calculate_score(data: dict) -> float:
     """Proprietary scoring function based on weighted criteria."""
     
-    # 1. P/E Scoring (Score between 0 and 4.0, lower P/E = higher score, up to a point)
     pe = data.get("pe", 0)
     pe_score = 0.0
     if 10 < pe <= 30: pe_score = 4.0
@@ -224,24 +198,79 @@ def calculate_score(data: dict) -> float:
     elif 50 < pe <= 70: pe_score = 1.5
     else: pe_score = 0.5
     
-    # 2. Sentiment Scoring (Score between 0 and 3.0, based on 0.0 to 1.0 value)
     sentiment = data.get("sentiment", 0.5)
     sentiment_score = sentiment * 3.0 
     
-    # 3. Volume Surge Scoring (Score between 0 and 2.0, higher surge = higher score)
     volume_surge = data.get("volume_surge_factor", 1.0)
     volume_score = min(volume_surge / 2.5, 2.0)
     
-    # 4. SEC Filings Scoring (Score between 0 and 1.0, count of recent positive filings)
     filing_count = data.get("sec_filings_count", 0)
     filing_score = min(filing_count * 0.25, 1.0)
     
-    # Final composite score
     composite_score = pe_score + sentiment_score + volume_score + filing_score
-    
-    # Normalize score and add small random noise for ranking variety
     return round(composite_score + random.uniform(-0.1, 0.1), 3)
 
+
+def fetch_master_symbols_from_supabase() -> list:
+    """Fetches the master list of symbols from the Supabase 'symbols' table."""
+    global SUPABASE_CLIENT
+    if SUPABASE_CLIENT:
+        try:
+            response = SUPABASE_CLIENT.table("symbols").select("symbol").execute()
+            symbols = [item['symbol'] for item in response.data if item.get('symbol')]
+            print(f"Successfully fetched {len(symbols)} symbols from Supabase.")
+            return symbols
+        except Exception as e:
+            print(f"Error fetching symbols from Supabase: {e}. Falling back to hardcoded list.")
+            return []
+    
+    # Fallback if Supabase client could not be initialized (e.g., missing secrets)
+    # This ensures the script can run for testing even without a fully populated Supabase DB
+    return ["MSFT", "AAPL", "GOOGL", "NVDA", "TSLA", "AMZN", "JPM", "V", "WMT", "KO", "BAC"]
+
+def generate_top_stocks():
+    """Fetches symbols, calculates scores, and returns the top 20 list."""
+    start_time = time.time()
+    symbols = fetch_master_symbols_from_supabase()
+    
+    # If Supabase is empty, use the same fallback symbols to test the rest of the pipeline
+    if not symbols:
+        symbols = ["MSFT", "AAPL", "GOOGL", "NVDA", "TSLA", "AMZN", "JPM", "V", "WMT", "KO", "BAC"]
+        print("Using hardcoded fallback symbols for testing.")
+
+    scored_stocks = []
+    
+    for i, symbol in enumerate(symbols):
+        print(f"Processing symbol {i+1}/{len(symbols)}: {symbol}...")
+        try:
+            # 1. Fetch data from APIs
+            fundamentals = fetch_fundamentals(symbol)
+            
+            # 2. Calculate score
+            score = calculate_score(fundamentals)
+            
+            scored_stocks.append({
+                "symbol": symbol,
+                "score": score,
+                "pe": fundamentals['pe'],
+                "sentiment": fundamentals['sentiment'],
+                "volumeSurge": fundamentals['volume_surge_factor'],
+                "secFilingsCount": fundamentals['sec_filings_count'],
+                "timestamp": datetime.now().isoformat()
+            })
+            
+            # Rate limit control: wait between API calls
+            time.sleep(0.5) 
+            
+        except Exception as e:
+            print(f"CRITICAL ERROR processing {symbol}: {e}")
+            continue
+
+    scored_stocks.sort(key=lambda x: x['score'], reverse=True)
+    duration = time.time() - start_time
+    print(f"Scoring complete. Total time: {duration:.1f}s")
+    
+    return scored_stocks[:20]
 
 # --- Firestore Initialization and Data Handlers ---
 
@@ -255,6 +284,7 @@ def initialize_firebase():
     
     try:
         cred = credentials.Certificate(cred_dict)
+        # Use a unique name for the app instance
         initialize_app(cred, name=f"screener_app_{APP_ID}")
         print("Firebase Admin SDK initialized successfully.")
         return firestore.client()
@@ -262,64 +292,10 @@ def initialize_firebase():
         print(f"Error initializing Firebase: {e}")
         raise e
 
-def fetch_master_symbols_from_supabase() -> list:
-    """Fetches the master list of symbols from the Supabase 'symbols' table."""
-    global SUPABASE_CLIENT
-    if SUPABASE_CLIENT:
-        try:
-            # Assumes 'symbols' table exists and contains a 'symbol' column
-            response = SUPABASE_CLIENT.table("symbols").select("symbol").execute()
-            symbols = [item['symbol'] for item in response.data if item.get('symbol')]
-            print(f"Successfully fetched {len(symbols)} symbols from Supabase.")
-            return symbols
-        except Exception as e:
-            print(f"Error fetching symbols from Supabase: {e}. Falling back to hardcoded list.")
-            return []
-    return []
-
-def generate_top_stocks():
-    """Runs the full screening pipeline: fetches data, calculates score, and identifies the top 20."""
-    # 1. Fetch Master Symbol List 
-    all_symbols = fetch_master_symbols_from_supabase()
-    
-    # Fallback to hardcoded list if Supabase fetch fails or is not configured
-    if not all_symbols:
-        print("Using hardcoded list for demonstration.")
-        all_symbols = ["MSFT", "AAPL", "GOOGL", "NVDA", "TSLA", "AMZN", "JPM", "V", "MA", "WMT", 
-                       "JNJ", "XOM", "UNH", "PG", "HD", "DIS", "NFLX", "ADBE", "CRM", "INTC", 
-                       "SBUX", "COST", "CSCO", "PYPL", "ZM", "LUV", "DAL", "UAL", "AAL", "F"]
-
-    scored_stocks = []
-    print(f"Starting analysis on {len(all_symbols)} candidate stocks...")
-    
-    for symbol in all_symbols:
-        # 2. Fetch required metrics (REAL Sentiment, P/E, SEC Filings / MOCK Volume)
-        metrics = fetch_fundamentals(symbol)
-        
-        # 3. Calculate proprietary score
-        score = calculate_score(metrics)
-        
-        # 4. Structure the result object for Firestore (key names must match React app)
-        stock_data = {
-            "symbol": symbol,
-            "pe": metrics.get("pe"),
-            "sentiment": metrics.get("sentiment"),
-            "volumeSurge": metrics.get("volume_surge_factor"), # Matches React key
-            "score": score,
-            "timestamp": datetime.now()
-        }
-        scored_stocks.append(stock_data)
-        
-    # 5. Sort and take the top 20
-    scored_stocks.sort(key=lambda x: x['score'], reverse=True)
-    top_20 = scored_stocks[:20]
-    
-    print(f"Top 20 stocks identified. Highest score: {top_20[0]['score']:.3f}")
-    return top_20
-
-def update_firestore(db: BaseCollection, top_stocks: list):
+def update_firestore(db, top_stocks: list):
     """Deletes all existing documents in the collection and writes the new list."""
     print(f"Starting database update in collection: {COLLECTION_PATH}")
+    
     collection_ref = db.collection(COLLECTION_PATH)
     
     # 1. Clear existing data
