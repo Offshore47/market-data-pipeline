@@ -15,14 +15,12 @@
     <!-- Load React and ReactDOM Libraries (Loaded via CDN) -->
     <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
-    
+
     <!-- Load Charting Libraries -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/moment.js/2.29.1/moment.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-moment@1.0.1/dist/chartjs-adapter-moment.min.js"></script>
     
-    <!-- FINAL ICON FIX: Using inline SVGs -->
-
 </head>
 <body>
     <div id="root"></div>
@@ -93,11 +91,11 @@
             // Accessing global objects defined by the CDN
             return {
                 initializeApp: window.firebase.initializeApp,
-                getAuth: window.firebase.auth, // Use the module itself
+                getAuth: window.firebase.auth, 
                 signInAnonymously: window.firebase.auth().signInAnonymously,
                 signInWithCustomToken: window.firebase.auth().signInWithCustomToken,
                 onAuthStateChanged: window.firebase.auth().onAuthStateChanged,
-                getFirestore: window.firebase.firestore, // Use the module itself
+                getFirestore: window.firebase.firestore, 
                 collection: window.firebase.firestore().collection,
                 onSnapshot: window.firebase.firestore().onSnapshot,
                 query: window.firebase.firestore().query,
@@ -560,5 +558,7 @@
             }
         });
     </script>
+</body>
+</html>```
 </body>
 </html>
