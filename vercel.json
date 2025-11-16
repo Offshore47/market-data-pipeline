@@ -1,14 +1,15 @@
 {
   "version": 2,
   "framework": null,
-  "cleanUrls": true,
+  "outputDirectory": "./",
   "builds": [
     {
-      "src": "package.json",
+      "src": "index.html",
       "use": "@vercel/static-build",
       "config": {
         "installCommand": "npm install",
-        "buildCommand": "echo 'Skipping React build process for single-file component' && cp index.html index.html"
+        "buildCommand": "echo 'Serving static HTML'",
+        "outputDirectory": "./"
       }
     }
   ],
