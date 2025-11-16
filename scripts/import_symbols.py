@@ -20,6 +20,17 @@ Deduplicate, conservative ETF and PREFERRED filtering, upsert to Supabase 'symbo
 Write run row to 'import_stats'
 Slack summary on success; Slack+SMS on failure (SMS only if Mailgun/SMTP configured)
 """
+# scripts/import_symbols.py
+"""
+Importer with OTC support (symbols-only).
+Indices from Wikipedia (S&P1500, Russell groups, DJIA)
+Russell fallback mirrors
+OTC symbol sources (multiple free mirrors + HTML fallback)
+Best-effort NASDAQ/otherlisted attempt (may be down)
+Deduplicate, conservative ETF and PREFERRED filtering, upsert to Supabase 'symbols'
+Write run row to 'import_stats'
+Slack summary on success; Slack+SMS on failure (SMS only if Mailgun/SMTP configured)
+"""
 import io 
 import csv 
 import time 
