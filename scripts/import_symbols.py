@@ -189,7 +189,7 @@ def fetch_fundamentals(symbol: str) -> dict:
     news_headlines = fetch_news_headlines(symbol)
     sentiment = get_sentiment_score(symbol, news_headlines)
     pe = get_pe_ratio(symbol)
-    sec_filings_count = get_sec_filing_count(symbol)
+    sec_filing_count = get_sec_filing_count(symbol)
     
     # Mock Volume Surge (TODO: Replace with real calculation)
     volume_surge_factor = round(random.uniform(1.0, 5.0), 1)
@@ -198,7 +198,7 @@ def fetch_fundamentals(symbol: str) -> dict:
         "pe": pe,
         "sentiment": sentiment,
         "volume_surge_factor": volume_surge_factor,
-        "sec_filings_count": sec_filings_count,
+        "sec_filings_count": sec_filing_count,
     }
 
 def calculate_score(data: dict) -> float:
