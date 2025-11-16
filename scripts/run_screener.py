@@ -5,7 +5,9 @@ from datetime import datetime, timedelta
 import random 
 import requests 
 from firebase_admin import credentials, initialize_app, firestore, exceptions
-from supabase import create_client
+# NOTE: Supabase client is no longer needed for symbol retrieval, but we keep the import structure just in case.
+# If you remove the 'supabase' dependency in your YAML, you can remove this line too.
+from supabase import create_client 
 
 # --------------------------- 
 # Environment / Supabase Configuration 
@@ -13,14 +15,11 @@ from supabase import create_client
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_ANON_KEY")
 
-# --- Initialize Supabase Client ---
+# --- Initialize Supabase Client (Kept for logging/future expansion, but not used for symbol fetch) ---
 if not SUPABASE_URL or not SUPABASE_KEY:
-    print("WARNING: Supabase configuration missing. Falling back to hardcoded symbols.")
     SUPABASE_CLIENT = None
 else:
     SUPABASE_CLIENT = create_client(SUPABASE_URL, SUPABASE_KEY)
-    print("Supabase client initialized.")
-
 
 # --- Global Configuration (Matches React App) ---
 APP_ID = os.environ.get('APP_ID', 'default-app-id') 
@@ -33,6 +32,12 @@ FINANCIAL_API_KEY = os.environ.get('FINANCIAL_API_KEY') # Finnhub Key
 
 FINNHUB_BASE_URL = "https://finnhub.io/api/v1"
 
+# --- RATE LIMIT CONFIGURATION & TARGETS ---
+# CRITICAL: We target 200 symbols total for scoring (800 API calls) to stay within the 1000/day limit.
+TARGET_SYMBOL_COUNT = 200 
+# Total time per symbol is approx 4.5 seconds (3s News + 1.5s Finnhub)
+# --------------------------------
+
 # --------------------------- 
 # LLM and News API Integration
 # ---------------------------
@@ -43,9 +48,17 @@ def fetch_news_headlines(symbol: str) -> str:
         print("NEWSAPI_KEY not found. Skipping news fetch.")
         return "No recent news found."
 
+    # CRITICAL: Sleep 3 seconds here to obey NewsAPI's strict rate limits
+    time.sleep(3) 
+
     url = f"https://newsapi.org/v2/everything?q={symbol} stock&sortBy=publishedAt&language=en&pageSize=10&apiKey={NEWSAPI_KEY}"
     try:
         response = requests.get(url, timeout=10)
+        
+        # Immediate check for the 429 error and raise if hit, which stops the whole job
+        if response.status_code == 429:
+            raise requests.exceptions.RequestException(f"429 Client Error: NewsAPI limit reached on {symbol}. Stopping scoring loop.")
+            
         response.raise_for_status()
         data = response.json()
         
@@ -127,6 +140,9 @@ def fetch_finnhub_data(endpoint: str, symbol: str, params: dict = None) -> dict:
         print("Finnhub API key missing. Skipping API fetch.")
         return {}
 
+    # CRITICAL: Sleep 1.5 seconds here to obey Finnhub's strict rate limits
+    time.sleep(1.5)
+
     url = f"{FINNHUB_BASE_URL}{endpoint}"
     
     full_params = {"symbol": symbol, "token": FINANCIAL_API_KEY}
@@ -137,6 +153,11 @@ def fetch_finnhub_data(endpoint: str, symbol: str, params: dict = None) -> dict:
     for attempt in range(MAX_RETRIES):
         try:
             response = requests.get(url, params=full_params, timeout=15)
+            
+            # Immediate check for the 429 error and raise if hit
+            if response.status_code == 429:
+                 raise requests.exceptions.RequestException(f"429 Client Error: Finnhub limit reached on {symbol} at {endpoint}. Stopping scoring loop.")
+                 
             response.raise_for_status()
             
             data = response.json()
@@ -154,9 +175,9 @@ def fetch_finnhub_data(endpoint: str, symbol: str, params: dict = None) -> dict:
 
 def get_pe_ratio(symbol: str) -> float:
     """Fetches the latest P/E ratio."""
+    # Note: Finnhub provides the basic metrics endpoint for free.
     data = fetch_finnhub_data("/stock/metric", symbol, {"metric": "price-to-book"}) 
     
-    # FIX: Ensure data is a dictionary before calling .get()
     if not isinstance(data, dict):
         return round(random.uniform(15.0, 80.0), 1)
 
@@ -179,7 +200,6 @@ def get_sec_filing_count(symbol: str) -> int:
     
     data = fetch_finnhub_data("/stock/filings", symbol, params)
     
-    # FIX: Ensure data is a dictionary before calling .get()
     if not isinstance(data, dict):
         return 0
         
@@ -188,75 +208,72 @@ def get_sec_filing_count(symbol: str) -> int:
     print(f"Found {count} recent SEC filings for {symbol}.")
     return count
 
+def get_top_200_symbols() -> list:
+    """
+    Fetches a proxy list of up to 200 highly relevant symbols 
+    using Finnhub's Free Market News endpoint (as a proxy for activity/market cap).
+    
+    Returns a list of unique ticker symbols.
+    """
+    if not FINANCIAL_API_KEY:
+        print("Finnhub API key missing. Using hardcoded symbols for testing.")
+        return ["MSFT", "AAPL", "GOOGL", "NVDA", "TSLA", "AMZN", "JPM", "V", "WMT", "KO", "BAC"]
+
+    url = f"{FINNHUB_BASE_URL}/news?category=general&minId=0&token={FINANCIAL_API_KEY}"
+    
+    # NOTE: The news endpoint returns symbols mentioned in articles, 
+    # making it a reliable proxy for active stocks.
+    
+    try:
+        response = requests.get(url, timeout=15)
+        response.raise_for_status()
+        articles = response.json()
+        
+        symbols = set()
+        for article in articles:
+            # Finnhub's article structure often includes a 'related' field with symbols
+            related = article.get('related', '')
+            if related:
+                symbols.update([s.strip() for s in related.split(',') if s.strip()])
+                
+        # Filter out ETFs and bad symbols (using the heuristic from the importer)
+        ETF_KEYWORDS = ["ETF", "ETN", "FUND", "TRUST", "INDEX", "EXCHANGE TRADED"]
+        filtered_symbols = [
+            s for s in symbols 
+            if s and len(s) <= 12 and 
+            not any(tok in s for tok in ETF_KEYWORDS) and
+            not any(s.endswith(suffix) for suffix in ['.P', '.W', '.U', '.V'])
+        ]
+        
+        # Shuffle and take the target count
+        random.shuffle(filtered_symbols)
+        final_list = filtered_symbols[:TARGET_SYMBOL_COUNT]
+        
+        print(f"Successfully compiled {len(final_list)} symbols using Finnhub News proxy.")
+        return final_list
+        
+    except requests.exceptions.RequestException as e:
+        print(f"Error fetching symbols via Finnhub News proxy: {e}. Falling back to default list.")
+        return ["MSFT", "AAPL", "GOOGL", "NVDA", "TSLA", "AMZN", "JPM", "V", "WMT", "KO", "BAC"]
+
+
 # --------------------------- 
-# Core Screener Logic
+# Main Orchestration
 # ---------------------------
-def fetch_fundamentals(symbol: str) -> dict:
-    """Fetches core metrics for scoring."""
-    
-    news_headlines = fetch_news_headlines(symbol)
-    sentiment = get_sentiment_score(symbol, news_headlines)
-    pe = get_pe_ratio(symbol)
-    sec_filing_count = get_sec_filing_count(symbol)
-    
-    # Mock Volume Surge (TODO: Replace with real calculation)
-    volume_surge_factor = round(random.uniform(1.0, 5.0), 1)
-    
-    return {
-        "pe": pe,
-        "sentiment": sentiment,
-        "volume_surge_factor": volume_surge_factor,
-        "sec_filings_count": sec_filing_count,
-    }
-
-def calculate_score(data: dict) -> float:
-    """Proprietary scoring function based on weighted criteria."""
-    
-    pe = data.get("pe", 0)
-    pe_score = 0.0
-    if 10 < pe <= 30: pe_score = 4.0
-    elif 30 < pe <= 50: pe_score = 3.0
-    elif 50 < pe <= 70: pe_score = 1.5
-    else: pe_score = 0.5
-    
-    sentiment = data.get("sentiment", 0.5)
-    sentiment_score = sentiment * 3.0 
-    
-    volume_surge = data.get("volume_surge_factor", 1.0)
-    volume_score = min(volume_surge / 2.5, 2.0)
-    
-    filing_count = data.get("sec_filings_count", 0)
-    filing_score = min(filing_count * 0.25, 1.0)
-    
-    composite_score = pe_score + sentiment_score + volume_score + filing_score
-    return round(composite_score + random.uniform(-0.1, 0.1), 3)
-
-
-def fetch_master_symbols_from_supabase() -> list:
-    """Fetches the master list of symbols from the Supabase 'symbols' table."""
-    global SUPABASE_CLIENT
-    if SUPABASE_CLIENT:
-        try:
-            response = SUPABASE_CLIENT.table("symbols").select("symbol").execute()
-            symbols = [item['symbol'] for item in response.data if isinstance(item, dict) and item.get('symbol')]
-            print(f"Successfully fetched {len(symbols)} symbols from Supabase.")
-            return symbols
-        except Exception as e:
-            print(f"Error fetching symbols from Supabase: {e}. Falling back to hardcoded list.")
-            return []
-    
-    # Fallback if Supabase client could not be initialized (e.g., missing secrets)
-    return ["MSFT", "AAPL", "GOOGL", "NVDA", "TSLA", "AMZN", "JPM", "V", "WMT", "KO", "BAC"]
 
 def generate_top_stocks():
     """Fetches symbols, calculates scores, and returns the top 20 list."""
     start_time = time.time()
-    symbols = fetch_master_symbols_from_supabase()
     
-    # If Supabase is empty, use the same fallback symbols to test the rest of the pipeline
+    # NEW STRATEGY: Get the Top 200 relevant symbols directly from Finnhub proxy
+    symbols = get_top_200_symbols()
+    
     if not symbols:
-        symbols = ["MSFT", "AAPL", "GOOGL", "NVDA", "TSLA", "AMZN", "JPM", "V", "WMT", "KO", "BAC"]
-        print("Using hardcoded fallback symbols for testing.")
+        print("CRITICAL: Failed to get any symbols. Exiting.")
+        return []
+
+    
+    print(f"Starting score run, processing {len(symbols)} symbols.")
 
     scored_stocks = []
     
@@ -266,7 +283,7 @@ def generate_top_stocks():
         
         print(f"Processing symbol {i+1}/{len(symbols)}: {symbol}...")
         try:
-            # 1. Fetch data from APIs
+            # 1. Fetch data from APIs (this includes all the necessary delays)
             fundamentals = fetch_fundamentals(symbol)
             
             # 2. Calculate score
@@ -282,11 +299,16 @@ def generate_top_stocks():
                 "timestamp": datetime.now().isoformat()
             })
             
-            # Rate limit control: wait between API calls
-            time.sleep(0.5) 
-            
+        except requests.exceptions.RequestException as e:
+            if "429 Client Error" in str(e):
+                print(f"!!! CRITICAL STOP: Daily API limit reached at symbol {symbol}. Exiting scoring loop now to preserve remaining budget.")
+                break # Stop the loop immediately
+            else:
+                # Re-raise any other unknown request exception (e.g., 401, 404, DNS error)
+                raise e 
+
         except Exception as e:
-            # The error is caught and reported here, allowing the loop to continue
+            # Catch all other critical errors (like JSON parsing issues)
             print(f"CRITICAL ERROR processing {symbol}: {e}")
             continue
 
@@ -342,6 +364,10 @@ def update_firestore(db, top_stocks: list):
     print("Existing documents cleared.")
     
     # 2. Write new data
+    if not top_stocks:
+        print("WARNING: No stocks were scored. Skipping Firestore update.")
+        return
+        
     for stock in top_stocks:
         doc_id = stock['symbol'] 
         collection_ref.document(doc_id).set(stock)
