@@ -289,7 +289,7 @@ def write_import_stats(status: str, fetched: int, filtered: int, error_message: 
         print("Failed to write import_stats:", e)
 
 # --------------------------- 
-# Notifications (omitted for brevity, assume they are the same)
+# Notifications 
 # ---------------------------
 def send_slack(msg: str):
     if not SLACK_WEBHOOK_URL: print("Slack not configured; skipping Slack.")
