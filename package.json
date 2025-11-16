@@ -1,0 +1,12 @@
+{
+  "name": "zero-cost-stock-screener",
+  "version": "1.0.0",
+  "description": "Single-file React stock screener deployed via Vercel.",
+  "scripts": {
+    "build": "echo 'Skipping React build process for single-file component' && cp StockScreener.jsx index.html"
+  },
+  "dependencies": {
+    "react": "18.2.0",
+    "react-dom": "18.2.0"
+  }
+}
