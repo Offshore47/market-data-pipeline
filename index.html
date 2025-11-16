@@ -13,6 +13,10 @@
         .drag-handle:active { cursor: grabbing; }
     </style>
     
+    <!-- Load React and ReactDOM Libraries (Loaded via CDN) -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+
     <!-- Load Charting Libraries -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/moment.js/2.29.1/moment.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
@@ -20,15 +24,12 @@
     
 </head>
 <body>
-    <div id="root">
-        <!-- Application content will be rendered here -->
-    </div>
+    <div id="root"></div>
     <div id="modal-container"></div>
     
     <script>
         
         // --- SIMULATED DATA (Based on your successful Firestore output) ---
-        // NOTE: This array is what your app will display.
         const SIMULATED_STOCKS = [
             { id: 'JPM', symbol: 'JPM', score: 7.567, pe: 14.2, sentiment: 0.85, volumeSurge: 1.5, secFilingsCount: 1 },
             { id: 'JNJ', symbol: 'JNJ', score: 7.210, pe: 18.8, sentiment: 0.80, volumeSurge: 1.3, secFilingsCount: 0 },
@@ -48,7 +49,12 @@
         ];
 
         // --- Configuration (Same keys used in your Python script) ---
-        const CHART_API_KEY = "YOUR_CHART_API_KEY_HERE"; 
+        //
+        // *** ACTION REQUIRED: PASTE YOUR KEY HERE ***
+        //
+        const CHART_API_KEY = "YOUR_CHART_API_KEY_HERE"; // <-- REPLACE THIS PLACEHOLDER
+        //
+        //
         const FINANCIAL_API_BASE_URL = "https://www.alphavantage.co/query"; 
         const userId = "SIMULATED_USER_123";
 
@@ -210,6 +216,7 @@
             if (CHART_API_KEY === "YOUR_CHART_API_KEY_HERE") {
                 const error = "Please set a valid CHART_API_KEY in the index.html file to fetch chart data.";
                 modalContainer.innerHTML = renderChartModal({ symbol: symbol, error: error });
+                renderChart({ symbol: symbol, data: [] }); // Render the empty state
                 return;
             }
 
@@ -222,6 +229,7 @@
                 if (response.status !== 200 || data["Error Message"] || data["Note"] || !data["Time Series (Daily)"]) {
                     const errorMsg = data["Error Message"] || data["Note"] || "Failed to load historical data. Check API key/limits.";
                     modalContainer.innerHTML = renderChartModal({ symbol: symbol, error: errorMsg });
+                    renderChart({ symbol: symbol, data: [] }); // Render the empty state
                     return;
                 }
                 
@@ -238,13 +246,14 @@
 
             } catch (e) {
                 modalContainer.innerHTML = renderChartModal({ symbol: symbol, error: `Network error: ${e.message}` });
+                renderChart({ symbol: symbol, data: [] }); // Render the empty state
             }
         };
 
         const closeChartModal = () => {
-            const modal = document.getElementById('chart-modal');
+            const modalContainer = document.getElementById('modal-container');
             const backdrop = document.getElementById('backdrop');
-            if (modal) modal.style.display = 'none';
+            if (modalContainer) modalContainer.innerHTML = "";
             if (backdrop) backdrop.style.display = 'none';
             
             if (currentChart) {
@@ -253,7 +262,7 @@
             }
         };
         
-        // --- *** THIS IS THE MISSING FUNCTION *** ---
+        // --- THIS IS THE MISSING FUNCTION (FIXED) ---
         // This function builds one row of the HTML table
         const createTableRow = (stock, index) => {
             return `
@@ -297,7 +306,7 @@
                                 Top 20 Calculated Picks (Simulated Data)
                             </h2>
                             
-                            <div class="overflow-x-auto rounded-lg border border-gray-200">
+                            <div classs="overflow-x-auto rounded-lg border border-gray-200">
                                 <table class="min-w-full divide-y divide-gray-200">
                                     <thead class="bg-gray-50">
                                         <tr>
@@ -309,7 +318,7 @@
                                             <th class="relative px-6 py-3"><span class="sr-only">Action</span></th>
                                         </tr>
                                     </thead>
-                                    <tbody>
+                                    <tbody id="stock-table-body">
                                         ${SIMULATED_STOCKS.slice(0, 20).map(createTableRow).join('')}
                                     </tbody>
                                 </table>
