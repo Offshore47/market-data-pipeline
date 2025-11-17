@@ -13,7 +13,8 @@
         .drag-handle:active { cursor: grabbing; }
     </style>
     
-    <!-- NOTE: Removed Chart.js and Moment.js as they are no longer needed -->
+    <!-- Load TradingView Advanced Chart Widget Script -->
+    <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js" async></script>
     
 </head>
 <body>
@@ -103,13 +104,9 @@
         };
         
         // --- NEW MODAL/CHART FUNCTIONS ---
-
-        // This function creates the HTML for the modal using the TradingView widget
-        const renderChartModal = ({ symbol }) => {
-            // *** FIX: Send the PLAIN, UNENCODED symbol. ***
-            // TradingView will find the best match (e.g., "TSLA" -> "NASDAQ:TSLA")
-            const tvSymbol = symbol;
-
+        
+        // This function creates the HTML for the modal *container*
+        const renderChartModalContainer = ({ symbol }) => {
             return `
                 <div id="chart-modal"
                     class="fixed bg-white/95 backdrop-blur-sm shadow-2xl rounded-xl z-50 border border-gray-200 w-11/12 md:w-3/4 lg:w-2/3 max-w-4xl"
@@ -125,13 +122,9 @@
                         </button>
                     </div>
                     
-                    <div class="p-4 h-96 flex items-center justify-center">
-                        <!-- TradingView Widget Embed -->
-                        <iframe 
-                            id="tradingview-iframe"
-                            src="https://s.tradingview.com/widgetembed/?frameborder=0&symbol=${tvSymbol}&interval=D&style=1&theme=light&allow_symbol_change=0&hide_side_toolbar=1&width=100%&height=100%"
-                            style="width: 100%; height: 100%;"
-                        ></iframe>
+                    <!-- This div is the target for the TradingView Widget -->
+                    <div id="tradingview-chart-container" class="p-4 h-96 flex items-center justify-center">
+                        <!-- The widget will be dynamically inserted here -->
                     </div>
                     
                     <p class="text-xs text-gray-500 p-2 text-center border-t">
@@ -141,17 +134,60 @@
             `;
         };
 
-        // This function is now much simpler: it just renders the modal HTML.
+        // This function loads the TradingView widget into the container
+        const loadTradingViewWidget = (symbol) => {
+            // Check if the TradingView library is loaded
+            if (typeof TradingView === 'undefined' || !TradingView.widget) {
+                console.error("TradingView library not loaded yet.");
+                document.getElementById('tradingview-chart-container').innerHTML = 
+                    '<div class="text-red-500">Error: TradingView library failed to load.</div>';
+                return;
+            }
+            
+            // Map the symbol (e.g., "JPM" -> "NYSE:JPM")
+            const prefixMap = {
+                'JPM': 'NYSE', 'JNJ': 'NYSE', 'PG': 'NYSE', 'BABA': 'NYSE', 'V': 'NYSE',
+                'HD': 'NYSE', 'KO': 'NYSE', 'BAC': 'NYSE', 'UNH': 'NYSE',
+                'GOOGL': 'NASDAQ', 'MSFT': 'NASDAQ', 'ADBE': 'NASDAQ', 
+                'AMZN': 'NASDAQ', 'NVDA': 'NASDAQ', 'TSLA': 'NASDAQ'
+            };
+            const prefix = prefixMap[symbol] || 'NASDAQ';
+            const tvSymbol = symbol.includes('.') ? symbol : `${prefix}:${symbol}`;
+
+            // Use the JavaScript constructor to create the widget
+            new TradingView.widget({
+                "container_id": "tradingview-chart-container", // The ID of the div we injected
+                "autosize": true,
+                "symbol": tvSymbol,
+                "interval": "D",
+                "style": "1",
+                "theme": "light",
+                "hide_side_toolbar": true,
+                "allow_symbol_change": false,
+                "save_image": false,
+                "calendar": false,
+                "studies": [],
+                "locale": "en"
+            });
+        };
+
+        // This function renders the modal and then loads the widget
         const fetchStockData = (symbol) => {
             const modalContainer = document.getElementById('modal-container');
             if (!modalContainer) return;
 
-            // Render the modal with the TradingView widget
-            modalContainer.innerHTML = renderChartModal({ symbol: symbol });
+            // 1. Render the modal HTML container
+            modalContainer.innerHTML = renderChartModalContainer({ symbol: symbol });
             document.getElementById('chart-modal').style.display = 'block';
             
             const backdrop = document.getElementById('backdrop');
             if (backdrop) backdrop.style.display = 'block';
+            
+            // 2. Dynamically load the widget into the container
+            // We use a short timeout to ensure the div is in the DOM before the script runs
+            setTimeout(() => {
+                loadTradingViewWidget(symbol);
+            }, 100); 
         };
 
         const closeChartModal = () => {
