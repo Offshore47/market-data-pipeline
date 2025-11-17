@@ -103,13 +103,30 @@
         };
         
         // --- NEW MODAL/CHART FUNCTIONS ---
+        
+        // FIX: Added a robust mapping for the simulated symbols
+        const getTVSymbol = (symbol) => {
+            // Simple map for our simulated data
+            const prefixMap = {
+                'JPM': 'NYSE', 'JNJ': 'NYSE', 'PG': 'NYSE', 'BABA': 'NYSE', 'V': 'NYSE',
+                'HD': 'NYSE', 'KO': 'NYSE', 'BAC': 'NYSE', 'UNH': 'NYSE',
+                'GOOGL': 'NASDAQ', 'MSFT': 'NASDAQ', 'ADBE': 'NASDAQ', 
+                'AMZN': 'NASDAQ', 'NVDA': 'NASDAQ', 'TSLA': 'NASDAQ'
+            };
+            
+            const prefix = prefixMap[symbol] || 'NASDAQ'; // Default to NASDAQ if not in our map
+            
+            if (symbol.includes('.')) {
+                return symbol; // Assume OTC/complex symbols are already formatted
+            }
+            
+            return `${prefix}:${symbol}`;
+        };
 
         // This function creates the HTML for the modal using the TradingView widget
         const renderChartModal = ({ symbol }) => {
-            // We must format the symbol for the TradingView URL (e.g., "AAPL" -> "NASDAQ:AAPL")
-            // This is a simple heuristic; a real app would need a map.
-            // For now, we assume NASDAQ for most.
-            const tvSymbol = symbol.includes('.') ? symbol : `NASDAQ:${symbol}`;
+            // Use the new mapping function to get the correct prefix
+            const tvSymbol = getTVSymbol(symbol);
 
             return `
                 <div id="chart-modal"
@@ -142,7 +159,7 @@
         };
 
         // This function is now much simpler: it just renders the modal HTML.
-        const fetchStockData = async (symbol) => {
+        const fetchStockData = (symbol) => {
             const modalContainer = document.getElementById('modal-container');
             if (!modalContainer) return;
 
@@ -250,7 +267,5 @@
             }
         });
     </script>
-</body>
-</html>
 </body>
 </html>
