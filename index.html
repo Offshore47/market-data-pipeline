@@ -1,4 +1,4 @@
- <!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -13,10 +13,7 @@
         .drag-handle:active { cursor: grabbing; }
     </style>
     
-    <!-- Load Charting Libraries -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/moment.js/2.29.1/moment.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-moment@1.0.1/dist/chartjs-adapter-moment.min.js"></script>
+    <!-- NOTE: Removed Chart.js and Moment.js as they are no longer needed -->
     
 </head>
 <body>
@@ -28,7 +25,6 @@
     <script>
         
         // --- SIMULATED DATA (Based on your successful Firestore output) ---
-        // NOTE: This is the data structure your Python script successfully published.
         const SIMULATED_STOCKS = [
             { id: 'JPM', symbol: 'JPM', score: 7.567, pe: 14.2, sentiment: 0.85, volumeSurge: 1.5, secFilingsCount: 1 },
             { id: 'JNJ', symbol: 'JNJ', score: 7.210, pe: 18.8, sentiment: 0.80, volumeSurge: 1.3, secFilingsCount: 0 },
@@ -46,14 +42,11 @@
             { id: 'NVDA', symbol: 'NVDA', score: 4.356, pe: 53.4, sentiment: 0.95, volumeSurge: 2.5, secFilingsCount: 0 },
             { id: 'TSLA', symbol: 'TSLA', score: 3.831, pe: 255.3, sentiment: 0.45, volumeSurge: 3.0, secFilingsCount: 0 },
         ];
-        
-        // --- Configuration (Same keys used in your Python script) ---
-        const CHART_API_KEY = "N4LNCSJZQ5P0C021"; // <-- ACTION: PASTE YOUR KEY HERE
-        const FINANCIAL_API_BASE_URL = "https://www.alphavantage.co/query"; 
+
+        // --- Configuration (API Key NO LONGER NEEDED) ---
         const userId = "SIMULATED_USER_123";
 
         // --- Global State and Handlers for Movable Modal ---
-        let currentChart = null;
         let isDragging = false;
         let dragStartPos = { x: 0, y: 0 };
         let modalPos = { x: 50, y: 50 };
@@ -109,64 +102,15 @@
             isDragging = false;
         };
         
-        const renderChart = (data) => {
-            const canvas = document.getElementById('chart-canvas');
-            if (!canvas || data.data.length === 0) return;
+        // --- NEW MODAL/CHART FUNCTIONS ---
 
-            if (currentChart) {
-                currentChart.destroy();
-            }
+        // This function creates the HTML for the modal using the TradingView widget
+        const renderChartModal = ({ symbol }) => {
+            // We must format the symbol for the TradingView URL (e.g., "AAPL" -> "NASDAQ:AAPL")
+            // This is a simple heuristic; a real app would need a map.
+            // For now, we assume NASDAQ for most.
+            const tvSymbol = symbol.includes('.') ? symbol : `NASDAQ:${symbol}`;
 
-            const ctx = canvas.getContext('2d');
-            currentChart = new Chart(ctx, {
-                type: 'line',
-                data: {
-                    datasets: [{
-                        label: `${data.symbol} Daily Close Price`,
-                        data: data.data,
-                        parsing: { xAxisKey: 'x', yAxisKey: 'y' },
-                        borderColor: 'rgb(75, 192, 192)',
-                        tension: 0.1,
-                        pointRadius: 0
-                    }]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    plugins: {
-                        legend: { display: true },
-                        title: { display: true, text: `${data.symbol} Historical Performance`, font: { size: 16 } }
-                    },
-                    scales: {
-                        x: {
-                            type: 'time',
-                            time: { unit: 'day', tooltipFormat: 'MMM D, YYYY' },
-                            title: { display: true, text: 'Date' }
-                        },
-                        y: { 
-                            title: { display: true, text: 'Price ($)' },
-                            ticks: {
-                                callback: function(value) { return '$' + value; }
-                            }
-                        }
-                    }
-                }
-            });
-        };
-
-        const renderChartModal = ({ symbol, data = [], loading = false, error = null }) => {
-            let content;
-            if (loading) {
-                content = `<div class="text-indigo-600 animate-spin mr-3">${getIconSvg('trending-up', 32)}</div>`;
-            } else if (error) {
-                content = `<div class="text-red-500 text-center p-4"><p class="font-bold">Data Fetch Error</p><p class="text-sm">${error}</p><p class="text-xs mt-2">Verify your API Key and check console.</p></div>`;
-            } else if (data.length === 0) {
-                 content = `<div class="text-gray-500 text-center"><p class="font-bold">No Chart Data Available</p><p class="text-sm">The API did not return historical data for this symbol.</p></div>`;
-            } else {
-                content = `<canvas id="chart-canvas" class="w-full h-full"></canvas>`;
-            }
-
-            // The modal HTML structure
             return `
                 <div id="chart-modal"
                     class="fixed bg-white/95 backdrop-blur-sm shadow-2xl rounded-xl z-50 border border-gray-200 w-11/12 md:w-3/4 lg:w-2/3 max-w-4xl"
@@ -183,57 +127,31 @@
                     </div>
                     
                     <div class="p-4 h-96 flex items-center justify-center">
-                        ${content}
+                        <!-- TradingView Widget Embed -->
+                        <iframe 
+                            src="https://s.tradingview.com/widgetembed/?frameborder=0&symbol=${tvSymbol}&interval=D&style=1&theme=light&allow_symbol_change=0&hide_side_toolbar=1&width=100%&height=100%"
+                            style="width: 100%; height: 100%;"
+                        ></iframe>
                     </div>
                     
                     <p class="text-xs text-gray-500 p-2 text-center border-t">
-                        Chart Data Source: Alpha Vantage (API Key must be configured)
+                        Chart data provided by TradingView
                     </p>
                 </div>
             `;
         };
 
+        // This function is now much simpler: it just renders the modal HTML.
         const fetchStockData = async (symbol) => {
             const modalContainer = document.getElementById('modal-container');
             if (!modalContainer) return;
 
-            // Render loading modal
-            modalContainer.innerHTML = renderChartModal({ symbol: symbol, loading: true, data: [] });
+            // Render the modal with the TradingView widget
+            modalContainer.innerHTML = renderChartModal({ symbol: symbol });
             document.getElementById('chart-modal').style.display = 'block';
-            document.getElementById('backdrop').style.display = 'block';
-
-            if (CHART_API_KEY === "YOUR_CHART_API_KEY_HERE") {
-                const error = "Please set a valid CHART_API_KEY in the index.html file to fetch chart data.";
-                modalContainer.innerHTML = renderChartModal({ symbol: symbol, error: error });
-                return;
-            }
-
-            const url = `${FINANCIAL_API_BASE_URL}?function=TIME_SERIES_DAILY_ADJUSTED&symbol=${symbol}&apikey=${CHART_API_KEY}`;
             
-            try {
-                const response = await fetch(url);
-                const data = await response.json();
-                
-                if (response.status !== 200 || data["Error Message"] || data["Note"] || !data["Time Series (Daily)"]) {
-                    const errorMsg = data["Error Message"] || data["Note"] || "Failed to load historical data. Check API key/limits.";
-                    modalContainer.innerHTML = renderChartModal({ symbol: symbol, error: errorMsg });
-                    return;
-                }
-                
-                const timeSeries = data["Time Series (Daily)"];
-                const dates = Object.keys(timeSeries).sort();
-                const chartPoints = dates.map(date => ({
-                    x: date,
-                    y: parseFloat(timeSeries[date]["4. close"])
-                }));
-                
-                // Render chart structure and then render the Chart.js visualization
-                modalContainer.innerHTML = renderChartModal({ symbol: symbol, data: chartPoints });
-                renderChart({ symbol: symbol, data: chartPoints });
-
-            } catch (e) {
-                modalContainer.innerHTML = renderChartModal({ symbol: symbol, error: `Network error: ${e.message}` });
-            }
+            const backdrop = document.getElementById('backdrop');
+            if (backdrop) backdrop.style.display = 'block';
         };
 
         const closeChartModal = () => {
@@ -241,14 +159,9 @@
             const backdrop = document.getElementById('backdrop');
             if (modalContainer) modalContainer.innerHTML = ""; // Clear the modal content
             if (backdrop) backdrop.style.display = 'none';
-            
-            if (currentChart) {
-                currentChart.destroy();
-                currentChart = null;
-            }
         };
-
-        // --- FIX: This function was missing in the corrupted file ---
+        
+        // This function builds one row of the HTML table
         const createTableRow = (stock, index) => {
             return `
                 <tr class="hover:bg-indigo-50 transition duration-150">
@@ -337,5 +250,7 @@
             }
         });
     </script>
+</body>
+</html>
 </body>
 </html>
