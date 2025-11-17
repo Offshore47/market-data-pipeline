@@ -103,32 +103,12 @@
         };
         
         // --- NEW MODAL/CHART FUNCTIONS ---
-        
-        // FIX: Added a robust mapping for the simulated symbols
-        const getTVSymbol = (symbol) => {
-            // Simple map for our simulated data
-            const prefixMap = {
-                'JPM': 'NYSE', 'JNJ': 'NYSE', 'PG': 'NYSE', 'BABA': 'NYSE', 'V': 'NYSE',
-                'HD': 'NYSE', 'KO': 'NYSE', 'BAC': 'NYSE', 'UNH': 'NYSE',
-                'GOOGL': 'NASDAQ', 'MSFT': 'NASDAQ', 'ADBE': 'NASDAQ', 
-                'AMZN': 'NASDAQ', 'NVDA': 'NASDAQ', 'TSLA': 'NASDAQ'
-            };
-            
-            const prefix = prefixMap[symbol] || 'NASDAQ'; // Default to NASDAQ if not in our map
-            
-            if (symbol.includes('.')) {
-                return symbol; // Assume OTC/complex symbols are already formatted
-            }
-            
-            return `${prefix}:${symbol}`;
-        };
 
         // This function creates the HTML for the modal using the TradingView widget
         const renderChartModal = ({ symbol }) => {
-            // Use the new mapping function to get the correct prefix
-            const tvSymbol = getTVSymbol(symbol);
-            // *** FIX: URL-encode the symbol to handle special characters like ':' ***
-            const encodedSymbol = encodeURIComponent(tvSymbol);
+            // *** FIX: Send the PLAIN, UNENCODED symbol. ***
+            // TradingView will find the best match (e.g., "TSLA" -> "NASDAQ:TSLA")
+            const tvSymbol = symbol;
 
             return `
                 <div id="chart-modal"
@@ -148,7 +128,8 @@
                     <div class="p-4 h-96 flex items-center justify-center">
                         <!-- TradingView Widget Embed -->
                         <iframe 
-                            src="https://s.tradingview.com/widgetembed/?frameborder=0&symbol=${encodedSymbol}&interval=D&style=1&theme=light&allow_symbol_change=0&hide_side_toolbar=1&width=100%&height=100%"
+                            id="tradingview-iframe"
+                            src="https://s.tradingview.com/widgetembed/?frameborder=0&symbol=${tvSymbol}&interval=D&style=1&theme=light&allow_symbol_change=0&hide_side_toolbar=1&width=100%&height=100%"
                             style="width: 100%; height: 100%;"
                         ></iframe>
                     </div>
@@ -223,7 +204,7 @@
                                 Top 20 Calculated Picks (Simulated Data)
                             </h2>
                             
-                            <div classs="overflow-x-auto rounded-lg border border-gray-200">
+                            <div class="overflow-x-auto rounded-lg border border-gray-200">
                                 <table class="min-w-full divide-y divide-gray-200">
                                     <thead class="bg-gray-50">
                                         <tr>
